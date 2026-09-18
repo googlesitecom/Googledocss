@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a1014">
+<meta name="description" content="Nexo — mensajería, llamadas y notificaciones en tiempo real. 100% serverless, funciona desde GitHub Pages.">
+<title>Nexo · Chat en tiempo real</title>
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+<noscript><div class="noscript">Nexo necesita JavaScript para funcionar.</div></noscript>
+
+<!-- ============ Sprite de iconos (Feather) ============ -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
+  <symbol id="i-cam-off" viewBox="0 0 24 24"><path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10"/><line x1="1" y1="1" x2="23" y2="23"/></symbol>
+  <symbol id="i-user-minus" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/></symbol>
+  <symbol id="i-user-plus" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></symbol>
+  <symbol id="i-user-check" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></symbol>
+  <symbol id="i-user-x" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="18" y1="8" x2="23" y2="13"/><line x1="23" y1="8" x2="18" y2="13"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+</svg>
+
+<!-- ============ Fallo de CDN ============ -->
+<div id="cdnFail" class="cdn-fail" hidden>
+  <svg class="icon big"><use href="#i-alert"/></svg>
+  <h3>No se pudieron cargar las librerías</h3>
+  <p>Revisa tu conexión a internet y vuelve a intentarlo.</p>
+  <button onclick="location.reload()" class="btn-primary">Reintentar</button>
+</div>
+
+<!-- ============ Pantalla de acceso ============ -->
+<div id="authScreen">
+  <section class="auth-hero">
+    <div class="hero-blobs"><span></span><span></span><span></span></div>
+    <div class="hero-content">
+      <div class="hero-brand">
+        <svg width="44" height="44" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="lg1" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".55" stop-color="#14b8a6"/><stop offset="1" stop-color="#059669"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#lg1)"/><path d="M15.5 17.5h17a3.5 3.5 0 0 1 3.5 3.5v7a3.5 3.5 0 0 1-3.5 3.5h-7.6l-5.4 4.6v-4.6h-4A3.5 3.5 0 0 1 12 28v-7a3.5 3.5 0 0 1 3.5-3.5Z" fill="#fff" fill-opacity=".96"/><circle cx="20.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="24.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="28.5" cy="24.5" r="1.7" fill="#0d9488"/></svg>
+        <span>Nexo</span>
+      </div>
+      <h1>Conversa sin fronteras,<br><em>directo de persona a persona.</em></h1>
+      <p class="hero-sub">Mensajería, imágenes y llamadas en tiempo real entre amigos. Sin servidores propietarios: tus conversaciones viajan por una red pública y tu historial vive en tu navegador.</p>
+      <ul class="hero-feats">
+        <li><svg class="icon"><use href="#i-chat"/></svg>Mensajes e imágenes en tiempo real con bandeja offline</li>
+        <li><svg class="icon"><use href="#i-phone"/></svg>Llamadas de voz y video P2P (WebRTC)</li>
+        <li><svg class="icon"><use href="#i-bell"/></svg>Notificaciones inteligentes con filtro anti-spam</li>
+        <li><svg class="icon"><use href="#i-users"/></svg>Amigos con solicitudes que deben aceptarse</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="auth-side">
+    <div class="auth-card">
+      <div class="auth-tabs">
+        <button type="button" class="auth-tab active" data-tab="login">Iniciar sesión</button>
+        <button type="button" class="auth-tab" data-tab="register">Crear cuenta</button>
+      </div>
+
+      <form id="loginForm" class="auth-form" novalidate>
+        <label>Nombre de usuario
+          <input id="liUser" autocomplete="username" spellcheck="false" autocapitalize="none" placeholder="ej. andrea_99" maxlength="20">
+        </label>
+        <label>Contraseña
+          <input id="liPass" type="password" autocomplete="current-password" placeholder="tu contraseña">
+        </label>
+        <p id="loginErr" class="form-err" hidden></p>
+        <button id="loginBtn" class="btn-primary" type="submit">Entrar</button>
+      </form>
+
+      <form id="registerForm" class="auth-form" hidden novalidate>
+        <label>Nombre de usuario
+          <input id="riUser" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="solo a-z, 0-9 y _" maxlength="20">
+        </label>
+        <label>Nombre para mostrar
+          <input id="riName" autocomplete="name" placeholder="ej. Andrea G." maxlength="32">
+        </label>
+        <label>Contraseña (mín. 6)
+          <input id="riPass" type="password" autocomplete="new-password" placeholder="mínimo 6 caracteres">
+        </label>
+        <label>Repetir contraseña
+          <input id="riPass2" type="password" autocomplete="new-password" placeholder="repite la contraseña">
+        </label>
+        <p id="regErr" class="form-err" hidden></p>
+        <button id="regBtn" class="btn-primary" type="submit">Crear cuenta</button>
+      </form>
+
+      <p id="authConn" class="auth-conn"><span class="conn-dot"></span><span>Conectando con la red…</span></p>
+      <p class="auth-note">App 100% serverless · MQTT + WebRTC<br>Se ejecuta completa en tu navegador</p>
+    </div>
+  </section>
+</div>
+
+<!-- ============ Aplicación ============ -->
+<div id="appScreen" hidden>
+
+  <!-- Barra lateral de navegación -->
+  <nav id="rail" aria-label="Navegación principal">
+    <div class="rail-logo" title="Nexo">
+      <svg width="34" height="34" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="lg2" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".55" stop-color="#14b8a6"/><stop offset="1" stop-color="#059669"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#lg2)"/><path d="M15.5 17.5h17a3.5 3.5 0 0 1 3.5 3.5v7a3.5 3.5 0 0 1-3.5 3.5h-7.6l-5.4 4.6v-4.6h-4A3.5 3.5 0 0 1 12 28v-7a3.5 3.5 0 0 1 3.5-3.5Z" fill="#fff" fill-opacity=".96"/><circle cx="20.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="24.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="28.5" cy="24.5" r="1.7" fill="#0d9488"/></svg>
+    </div>
+    <button class="rail-btn active" data-view="chats" title="Chats" aria-label="Chats"><svg class="icon"><use href="#i-chat"/></svg></button>
+    <button class="rail-btn" data-view="friends" title="Amigos" aria-label="Amigos"><svg class="icon"><use href="#i-users"/></svg></button>
+    <button class="rail-btn" data-view="settings" title="Ajustes" aria-label="Ajustes"><svg class="icon"><use href="#i-sliders"/></svg></button>
+    <div class="rail-spacer"></div>
+    <button id="themeToggle" class="rail-btn" title="Cambiar tema" aria-label="Cambiar tema"><svg class="icon"><use href="#i-moon"/></svg></button>
+    <div id="myAvatar" class="avatar rail-avatar" title=""></div>
+  </nav>
+
+  <!-- Panel de listas -->
+  <aside id="panel">
+    <header class="panel-head">
+      <h2 id="panelTitle">Chats</h2>
+      <button id="btnBell" class="icon-btn" title="Notificaciones" aria-label="Notificaciones">
+        <svg class="icon"><use href="#i-bell"/></svg>
+        <span id="bellDot" class="dot-badge" hidden></span>
+      </button>
+      <div id="connStatus" class="conn"><span class="conn-dot"></span><span class="conn-txt">Conectando…</span></div>
+    </header>
+
+    <div class="panel-body">
+      <div id="viewChats" class="view">
+        <div id="convoList" class="list"></div>
+      </div>
+
+      <div id="viewFriends" class="view" hidden>
+        <div class="search-row">
+          <input id="friendSearch" placeholder="Usuario exacto… (a-z, 0-9, _)" maxlength="20" spellcheck="false" autocapitalize="none">
+          <button id="btnSearch" class="icon-btn" title="Buscar" aria-label="Buscar usuario"><svg class="icon"><use href="#i-search"/></svg></button>
+        </div>
+        <div id="searchResult"></div>
+        <div id="friendsSections"></div>
+      </div>
+
+      <div id="viewSettings" class="view" hidden></div>
+    </div>
+  </aside>
+
+  <!-- Zona de conversación -->
+  <main id="chatArea">
+    <div id="emptyState">
+      <svg width="88" height="88" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="lg3" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".55" stop-color="#14b8a6"/><stop offset="1" stop-color="#059669"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#lg3)"/><path d="M15.5 17.5h17a3.5 3.5 0 0 1 3.5 3.5v7a3.5 3.5 0 0 1-3.5 3.5h-7.6l-5.4 4.6v-4.6h-4A3.5 3.5 0 0 1 12 28v-7a3.5 3.5 0 0 1 3.5-3.5Z" fill="#fff" fill-opacity=".96"/><circle cx="20.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="24.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="28.5" cy="24.5" r="1.7" fill="#0d9488"/></svg>
+      <h3>Selecciona una conversación</h3>
+      <p>Envía mensajes e imágenes, o inicia una llamada con tus amigos.</p>
+    </div>
+
+    <div id="chatView" hidden>
+      <header id="chatHeader">
+        <button id="btnBack" class="icon-btn only-mobile" title="Volver" aria-label="Volver"><svg class="icon"><use href="#i-back"/></svg></button>
+        <div id="chatPeer">
+          <div id="chatAvatar" class="avatar"></div>
+          <div class="peer-info">
+            <strong id="chatName"></strong>
+            <span id="chatPresence" class="presence-txt">desconectado</span>
+          </div>
+        </div>
+        <div class="chat-actions">
+          <button id="btnCallAudio" class="icon-btn" title="Llamada de voz" aria-label="Llamada de voz"><svg class="icon"><use href="#i-phone"/></svg></button>
+          <button id="btnCallVideo" class="icon-btn" title="Videollamada" aria-label="Videollamada"><svg class="icon"><use href="#i-video"/></svg></button>
+          <button id="btnRemoveFriend" class="icon-btn danger" title="Eliminar amigo" aria-label="Eliminar amigo"><svg class="icon"><use href="#i-user-minus"/></svg></button>
+        </div>
+      </header>
+
+      <div id="typingRow" hidden><span class="typing-dots"><i></i><i></i><i></i></span><em id="typingName"></em>&nbsp;está escribiendo…</div>
+
+      <div id="messages" role="log" aria-live="polite"></div>
+
+      <footer id="composer">
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <button id="btnAttach" class="icon-btn" title="Enviar imagen" aria-label="Adjuntar imagen"><svg class="icon"><use href="#i-image"/></svg></button>
+        <textarea id="msgInput" rows="1" placeholder="Escribe un mensaje…" maxlength="4000"></textarea>
+        <button id="btnSend" class="send-btn" title="Enviar" aria-label="Enviar"><svg class="icon"><use href="#i-send"/></svg></button>
+      </footer>
+    </div>
+  </main>
+
+  <!-- Panel de notificaciones -->
+  <div id="notifPanel" hidden>
+    <header>
+      <h3>Notificaciones</h3>
+      <button id="notifClear" class="link-btn">Limpiar</button>
+    </header>
+    <div id="notifList"></div>
+  </div>
+
+  <!-- Overlay de llamada -->
+  <div id="callOverlay" hidden>
+    <div class="call-stage">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <video id="localVideo" autoplay playsinline muted></video>
+      <div id="callCenter" class="call-center">
+        <div id="callAvatar" class="avatar big"></div>
+        <h3 id="callName"></h3>
+        <p id="callState">Llamando…</p>
+        <p id="callTimer" hidden>00:00</p>
+      </div>
+      <div id="callControls" class="call-controls"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Globales ============ -->
+<div id="toasts" aria-live="polite"></div>
+<div id="lightbox" hidden><button id="lightboxClose" class="icon-btn" title="Cerrar"><svg class="icon"><use href="#i-x"/></svg></button><img id="lightboxImg" alt="Imagen en tamaño completo"></div>
+<div id="modalRoot" hidden></div>
+
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+  (function () {
+    function fail() {
+      var el = document.getElementById('cdnFail'); if (el) el.hidden = false;
+      var a = document.getElementById('authScreen'); if (a) a.style.display = 'none';
+    }
+    if (typeof mqtt === 'undefined' || typeof Peer === 'undefined') fail();
+    else if (document.getElementById('cdnFail')) document.getElementById('cdnFail').hidden = true;
+  })();
+</script>
+<script src="./js/util.js"></script>
+<script src="./js/storage.js"></script>
+<script src="./js/crypto.js"></script>
+<script src="./js/sound.js"></script>
+<script src="./js/spam.js"></script>
+<script src="./js/mqtt-service.js"></script>
+<script src="./js/presence.js"></script>
+<script src="./js/notify.js"></script>
+<script src="./js/auth.js"></script>
+<script src="./js/friends.js"></script>
+<script src="./js/chat.js"></script>
+<script src="./js/calls.js"></script>
+<script src="./js/app.js"></script>
+</body>
+</html>
