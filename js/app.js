@@ -64,20 +64,22 @@ const App = {
 
   showView(v) {
     this.view = v;
-    ['chats', 'friends', 'settings'].forEach((x) => {
+    ['chats', 'friends', 'games', 'settings'].forEach((x) => {
       const el = $('#view' + x.charAt(0).toUpperCase() + x.slice(1));
       if (el) el.hidden = x !== v;
     });
     $$('.rail-btn[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
-    $('#panelTitle').textContent = { chats: 'Chats', friends: 'Amigos', settings: 'Ajustes' }[v] || v;
+    $('#panelTitle').textContent = { chats: 'Chats', friends: 'Amigos', games: 'Juegos', settings: 'Ajustes' }[v] || v;
     $('#notifPanel').hidden = true;
     if (v === 'chats') this.renderConvoList();
     if (v === 'friends') this.renderFriends();
+    if (v === 'games' && typeof Games !== 'undefined') Games.render();
     if (v === 'settings') this.renderSettings();
     if (window.innerWidth <= 920) this.setChatOpen(false);
   },
   openChat(key) {
     this.showView('chats');
+    if (typeof Games !== 'undefined' && Games.close) Games.close();
     Chat.open(key);
   },
   setChatOpen(on) { document.body.classList.toggle('chat-open', on); },
@@ -119,8 +121,15 @@ const App = {
     list.innerHTML = items.map(({ key, group }) => {
       const last = Chat.lastMsg(key);
       const name = group ? group.name : Friends.name(key);
+      /* ¿hay una llamada de grupo EN CURSO en la que no estoy? */
+      const og = (group && typeof Calls !== 'undefined' && Calls.ongoingInfo)
+        ? Calls.ongoingInfo(group.id) : null;
+      const inThis = (group && typeof Calls !== 'undefined' && Calls.inThisCall)
+        ? Calls.inThisCall(group.id) : false;
       let prev = group ? `${group.members.length} miembros` : 'Inicia la conversación';
-      if (last) prev = (last.mine ? 'Tú: ' : (group ? (last.name || '') + ': ' : '')) +
+      if (og && !inThis) prev = 'Llamada en curso · toca para unirte';
+      else if (inThis) prev = 'Estás en la llamada';
+      else if (last) prev = (last.mine ? 'Tú: ' : (group ? (last.name || '') + ': ' : '')) +
         (last.t === 'img' ? '· Imagen ·' : last.t === 'voice' ? '· Mensaje de voz ·' : last.t === 'stk' ? '· Sticker ·' : truncate(last.text, group ? 34 : 42));
       const un = Chat.unread(key);
       const active = Chat.active === key && this.view === 'chats';
@@ -130,11 +139,11 @@ const App = {
       const dot = group
         ? `<span class="pres-dot ${Groups.onlineCount(group.id) ? 'on' : ''}" title="grupo"></span>`
         : `<span class="pres-dot ${Presence.isOnline(key) ? 'on' : ''}" title="${Presence.status(key)}"></span>`;
-      return `<button class="convo ${active ? 'active' : ''} ${group ? 'is-group' : ''}" data-key="${esc(key)}">
+      return `<button class="convo ${active ? 'active' : ''} ${group ? 'is-group' : ''} ${og && !inThis ? 'has-call' : ''}" data-key="${esc(key)}">
         <div class="avatar" style="--h:${hueOf(group ? group.id : key)}">${avInner}</div>
         <div class="convo-main">
           <div class="convo-top"><strong>${esc(name)}</strong><span class="convo-time">${last ? fmtDay(last.ts) : ''}</span></div>
-          <div class="convo-bot"><span class="convo-prev">${esc(prev)}</span>${un ? `<span class="unread">${un > 99 ? '99+' : un}</span>` : ''}</div>
+          <div class="convo-bot"><span class="convo-prev">${og && !inThis ? `<svg class="ic-mini"><use href="#i-phone"/></svg> ` : ''}${esc(prev)}</span>${un ? `<span class="unread">${un > 99 ? '99+' : un}</span>` : ''}</div>
         </div>
         ${dot}
       </button>`;
@@ -317,6 +326,7 @@ const App = {
     const kind = p[2];
     if (kind === 'dm' && p[3] === Auth.me.uid) Chat.handleIncoming(p[4], p.slice(5), m);
     else if (kind === 'gm') Chat.handleGroupIncoming(p[3], p[4], p.slice(5), m);
+    else if (kind === 'gcall') { if (typeof Calls !== 'undefined') Calls.onCallState(p[3], m); }
     else if (kind === 'ginv' && p[3] === Auth.me.uid) Groups.onInvite(p[4], m);
     else if (kind === 'freq' && p[3] === Auth.me.uid) Friends.handleRequest(p[4], m);
     else if (kind === 'fresp' && p[3] === Auth.me.uid) Friends.handleResponse(p[4], m);
@@ -596,6 +606,21 @@ const App = {
     /* banner de llamada en segundo plano */
     $('#cbReturn').addEventListener('click', () => Calls.restore());
     $('#cbHangup').addEventListener('click', () => Calls.hangup());
+
+    /* UNIRSE a una llamada de grupo en curso */
+    $('#gcJoin') && $('#gcJoin').addEventListener('click', () => {
+      const k = Chat.kind(Chat.active);
+      if (k.type === 'group' && k.gid) Calls.joinGroup(k.gid);
+    });
+
+    /* JUEGOS: tarjetas del panel + escenario (iframe) en la zona principal */
+    $('#viewGames') && $('#viewGames').addEventListener('click', (e) => {
+      const card = e.target.closest('[data-game]');
+      if (card) { Games.open(card.dataset.game); return; }
+      const ext = e.target.closest('[data-ext]');
+      if (ext) { window.open(ext.dataset.ext, '_blank', 'noopener'); }
+    });
+    $('#gsBack') && $('#gsBack').addEventListener('click', () => Games.close());
     $('#btnRemoveFriend').addEventListener('click', () => {
       if (!Chat.active) return;
       const uid = Chat.active;

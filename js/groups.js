@@ -18,6 +18,8 @@ const Groups = {
     Mqtt.sub(`${NS}/ginv/${Auth.me.uid}/+`);
     this.all().forEach((g) => {
       Mqtt.sub(`${NS}/gm/${g.id}/#`);
+      /* estado de la llamada de grupo en curso (barra «Unirse») */
+      Mqtt.sub(T.gcall(g.id));
       /* vigilar presencia/perfil de todos los miembros (aunque no sean amigos) */
       (g.members || []).forEach((u) => Presence.watch(u));
     });
@@ -42,6 +44,7 @@ const Groups = {
     /* descriptor retenido: cualquier miembro puede recuperarlo */
     this.publishDescriptor(g);
     Mqtt.sub(`${NS}/gm/${g.id}/#`);
+    Mqtt.sub(T.gcall(g.id));
 
     /* invitación retenida a cada miembro + push si está desconectado */
     memberUids.forEach((u) => {
@@ -76,6 +79,7 @@ const Groups = {
     };
     this.save([...this.all(), g]);
     Mqtt.sub(`${NS}/gm/${gid}/#`);
+    Mqtt.sub(T.gcall(gid));
     Presence.watch(m.from);
     this.clearInvite(gid);
     /* refrescar miembros desde el descriptor retenido (best effort) */
@@ -109,6 +113,9 @@ const Groups = {
     const list = this.all().filter((x) => x.id !== gid);
     this.save(list);
     Mqtt.unsub(`${NS}/gm/${gid}/#`);
+    Mqtt.unsub(T.gcall(gid));
+    /* sin miembro: limpiar el estado de «llamada en curso» si lo había */
+    if (typeof Calls !== 'undefined' && Calls.ongoing) delete Calls.ongoing[gid];
 
     if (rest.length) {
       const updated = { ...g, members: rest };

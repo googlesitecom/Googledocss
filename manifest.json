@@ -1,7 +1,7 @@
 {
   "name": "Nexo · Chat en tiempo real",
   "short_name": "Nexo",
-  "description": "Mensajería, grupos, llamadas, mensajes de voz y notificaciones en tiempo real. 100% serverless.",
+  "description": "Mensajería, grupos, llamadas, mensajes de voz, notificaciones y juegos. 100% serverless.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -27,6 +27,8 @@ const T = {
   gmc: (gid, from, id, i) => `${NS}/gm/${gid}/${from}/${id}/${i}`,
   gsys: (gid, from) => `${NS}/gm/${gid}/sys/${from}`,
   ginv: (u, gid) => `${NS}/ginv/${u}/${gid}`,
+  /* estado RETENIDO de la llamada de grupo en curso (unirse tarde) */
+  gcall: (gid) => `${NS}/gcall/${gid}`,
   /* suscripción web push de cada usuario (notificaciones sin abrir la app) */
   psub: (u) => `${NS}/psub/${u}`
 };

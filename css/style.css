@@ -1138,3 +1138,135 @@ select.seg {
 .rail-avatar { cursor: pointer; }
 .rail-avatar:hover { box-shadow: 0 0 0 2px var(--acc); }
 #chatPeer { cursor: pointer; }
+
+/* ============================================================
+   NUEVO v5 · Unirse a llamadas en curso, Juegos, logo y pulido
+   ============================================================ */
+
+/* ---- barra «Llamada de grupo en curso · Unirse» (bajo la cabecera) ---- */
+#grpCallBar {
+  display: flex; align-items: center; gap: 12px;
+  margin: 10px 16px 0; padding: 10px 12px 10px 14px;
+  background: linear-gradient(135deg, rgba(13, 122, 92, .32), rgba(17, 128, 95, .18));
+  border: 1px solid rgba(45, 212, 191, .4);
+  border-radius: 14px;
+  animation: dropIn .25s ease;
+}
+[data-theme="light"] #grpCallBar {
+  background: linear-gradient(135deg, rgba(16, 185, 129, .16), rgba(13, 148, 136, .08));
+  border-color: rgba(13, 148, 136, .35);
+}
+.gc-live {
+  position: relative;
+  width: 36px; height: 36px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  background: var(--grad); color: #fff;
+  box-shadow: 0 4px 14px rgba(20, 184, 166, .4);
+}
+.gc-live .icon { width: 17px; height: 17px; }
+.gc-live::after {
+  content: ""; position: absolute; inset: -2px; border-radius: 50%;
+  border: 2px solid var(--acc2); animation: ringPulse 1.8s ease-out infinite;
+  pointer-events: none;
+}
+#grpCallBar { position: relative; }
+.gc-info { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.gc-info strong { font-size: 13.5px; }
+.gc-info span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gc-join {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 9px 16px; border-radius: 99px;
+  background: var(--grad); color: #fff;
+  font-weight: 800; font-size: 13px;
+  box-shadow: 0 5px 16px rgba(20, 184, 166, .4);
+  transition: transform .15s, filter .15s;
+}
+.gc-join:hover { transform: translateY(-1px) scale(1.03); filter: brightness(1.08); }
+.gc-join .icon { width: 15px; height: 15px; }
+
+/* ---- lista: conversación con llamada en curso ---- */
+.convo.has-call { background: rgba(34, 197, 94, .07); }
+.convo.has-call:hover { background: rgba(34, 197, 94, .12); }
+.convo.has-call .convo-prev { color: var(--green); font-weight: 700; }
+.convo.has-call .convo-prev .ic-mini { color: var(--green); margin-right: 1px; }
+.convo.has-call .avatar { box-shadow: 0 0 0 2px rgba(34, 197, 94, .6); }
+.convo.has-call .pres-dot { background: var(--green); box-shadow: 0 0 0 2.5px var(--panel), 0 0 9px rgba(34, 197, 94, .8); animation: recPulse 1.6s infinite; }
+
+/* ---- vista de Juegos (panel) ---- */
+.games-intro { font-size: 12.5px; color: var(--muted); margin: 4px 4px 12px; line-height: 1.5; }
+.games-grid { display: grid; gap: 12px; }
+.game-card {
+  display: flex; flex-direction: column;
+  background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 18px; overflow: hidden; text-align: left;
+  transition: transform .16s, border-color .16s, box-shadow .16s;
+}
+.game-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--acc);
+  box-shadow: 0 14px 30px rgba(2, 12, 16, .35);
+}
+.game-card:active { transform: translateY(-1px); }
+.game-art { display: block; width: 100%; aspect-ratio: 16 / 8; }
+.game-art svg { width: 100%; height: 100%; display: block; }
+.game-body { display: grid; gap: 3px; padding: 12px 14px 14px; }
+.game-body strong { font-size: 15.5px; font-weight: 800; }
+.game-body em {
+  font-style: normal; font-size: 10.5px; font-weight: 800;
+  letter-spacing: .8px; text-transform: uppercase; color: var(--acc2);
+}
+.game-desc { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin-top: 3px; }
+.game-cta {
+  display: inline-flex; align-items: center; gap: 7px; justify-self: start;
+  margin-top: 9px; padding: 7px 14px; border-radius: 99px;
+  background: var(--acc-soft); color: var(--acc2);
+  font-weight: 800; font-size: 12.5px;
+  transition: background .15s, transform .15s;
+}
+.game-card:hover .game-cta { background: var(--grad); color: #fff; transform: scale(1.03); }
+.game-cta .icon { width: 13px; height: 13px; fill: currentColor; stroke: none; }
+.games-note {
+  display: flex; align-items: center; gap: 7px; justify-content: center;
+  margin-top: 14px; font-size: 11.5px; color: var(--faint); text-align: center;
+}
+.games-note .icon { width: 13px; height: 13px; flex: none; }
+
+/* ---- escenario de juego (zona principal, iframe) ---- */
+#gameStage { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
+.gs-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; min-height: 62px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.gs-title { flex: 1; min-width: 0; display: grid; }
+.gs-title strong { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gs-title span { font-size: 11px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--acc2); }
+.gs-frame { flex: 1; min-height: 0; position: relative; background: #000; }
+#gsFrame { position: absolute; inset: 0; width: 100%; height: 100%; border: none; background: #000; }
+
+/* ---- pulido v5: marca, foco accesible y detalles ---- */
+.hero-logo { border-radius: 13px; box-shadow: 0 10px 30px rgba(13, 148, 136, .35), 0 0 0 1px rgba(255, 255, 255, .08) inset; }
+.hero-brand span {
+  background: var(--grad); -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.rail-logo svg { border-radius: 10px; box-shadow: 0 6px 18px rgba(13, 148, 136, .3); }
+.rail-btn { border-radius: 14px; }
+.rail-btn:hover { transform: translateY(-1px); }
+.rail-btn:active { transform: translateY(0) scale(.96); }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--acc2); outline-offset: 2px;
+}
+#emptyState svg { border-radius: 24px; box-shadow: 0 18px 44px rgba(13, 148, 136, .28); }
+#emptyState h3 { background: var(--grad); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.panel-head h2::after {
+  content: ""; display: block; width: 26px; height: 3.5px; border-radius: 4px;
+  background: var(--grad); margin-top: 4px;
+}
+@media (max-width: 920px) {
+  #grpCallBar { margin: 8px 10px 0; }
+  .games-grid { gap: 10px; }
+  .game-art { aspect-ratio: 16 / 7; }
+  #gameStage { position: fixed; inset: 60px 0 0 0; z-index: 40; }
+  body.chat-open #gameStage { display: flex; }
+}

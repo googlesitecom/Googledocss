@@ -28,6 +28,13 @@ const Calls = {
   g: null,         /* grupo: {gid, gname, callId, inviter, members[]} */
   _invite: null,   /* invitación de grupo pendiente de aceptar */
 
+  /* Llamadas de grupo EN CURSO (para unirse tarde):
+     gid -> {callId, host, hostName, gname, video, members[], ts}
+     Se alimenta del estado retenido (nexo/v1/gcall/<gid>) y de los
+     eventos en vivo, y se muestra como barra «Unirse» en el chat. */
+  ongoing: {},
+  _stateTimer: null, /* latido del estado retenido mientras estoy en llamada */
+
   localStream: null,   /* stream que se envía (audio + video real|dummy) */
   _audioTrack: null,
   _camTrack: null,     /* cámara real (si existe) */
@@ -228,6 +235,11 @@ const Calls = {
     this.showOverlay('out', g.name);
     Sound.startRing();
 
+    /* estado retenido: «hay una llamada en curso en este grupo» —
+       quien no entró (o abre la app más tarde) podrá UNIRSE */
+    this._publishCallState();
+    this._startStateHeartbeat();
+
     /* invitación a cada miembro (evt en vivo) + push si está desconectado */
     others.forEach((u) => {
       Mqtt.publish(T.evt(u), {
@@ -289,7 +301,16 @@ const Calls = {
       from: m.from, fromName: m.fromName || m.from,
       video: !!m.video, members: Array.isArray(m.members) ? m.members : []
     };
+    /* registrar la llamada como EN CURSO: si la rechazo (o la pierdo)
+       seguirá visible la barra «Unirse» del chat del grupo */
+    this.ongoing[m.gid] = {
+      callId: m.callId, host: m.from, hostName: m.fromName || m.from,
+      gname: m.gname || 'Grupo', video: !!m.video,
+      members: (Array.isArray(m.members) ? m.members : []).filter((u) => u && u !== Auth.me.uid),
+      ts: Date.now()
+    };
     this._showGroupInvite();
+    this._renderOngoingUI(m.gid);
   },
 
   /* conexión directa de grupo antes de aceptar (la llamada llegó antes que el evt) */
@@ -386,6 +407,117 @@ const Calls = {
 
     /* y llamar a los uid mayores que el mío */
     this.g.members.forEach((u) => { if (u > Auth.me.uid) this._callMember(u); });
+
+    /* estoy dentro: mantener el estado retenido de la llamada */
+    this._publishCallState();
+    this._startStateHeartbeat();
+  },
+
+  /* ================== UNIRSE a una llamada de grupo EN CURSO ==================
+     Si no entraste al principio (rechazaste, abriste la app tarde o
+     cambiaste de pestaña) la llamada sigue existiendo: el chat del grupo
+     muestra una barra «Unirse» alimentada por el estado retenido
+     nexo/v1/gcall/<gid> (latido cada 60 s, caduca a los 5 min si muere). */
+  ongoingInfo(gid) {
+    const o = this.ongoing[gid];
+    if (!o || !o.callId) { delete this.ongoing[gid]; return null; }
+    if (Date.now() - (o.ts || 0) > 6 * 60 * 1000) { delete this.ongoing[gid]; return null; }
+    return o;
+  },
+  inThisCall(gid) {
+    return !!(this.mode === 'group' && this.g && this.g.gid === gid && this.state !== 'idle');
+  },
+
+  _publishCallState() {
+    if (!this.g) return;
+    const parts = [...new Set([Auth.me.uid, ...Object.keys(this.streams)])];
+    Mqtt.publish(T.gcall(this.g.gid), {
+      t: 'gstate', gid: this.g.gid, callId: this.g.callId,
+      host: this.g.inviter, hostName: (this.g.inviter === Auth.me.uid ? Auth.me.name : Friends.name(this.g.inviter)) || '',
+      gname: this.g.gname, video: this._video,
+      members: parts, from: Auth.me.uid, ts: Date.now()
+    }, { retain: true, expiry: 300 }); /* caduca sola si el navegador muere */
+  },
+
+  _startStateHeartbeat() {
+    clearInterval(this._stateTimer);
+    this._stateTimer = setInterval(() => {
+      if (this.mode === 'group' && this.g && this.state !== 'idle') this._publishCallState();
+      else clearInterval(this._stateTimer);
+    }, 60000);
+  },
+
+  /* entrada del estado retenido (nexo/v1/gcall/<gid>) */
+  onCallState(gid, m) {
+    if (!Auth.me) return;
+    if (this.inThisCall(gid)) return;            /* mi propia llamada: la mantengo yo */
+    if (!m || !m.callId || !Array.isArray(m.members)) { delete this.ongoing[gid]; }
+    else {
+      const mine = m.members.filter((u) => u && u !== Auth.me.uid);
+      if (!mine.length) delete this.ongoing[gid]; /* ya no queda nadie */
+      else this.ongoing[gid] = {
+        callId: m.callId, host: m.host, hostName: m.hostName || m.host || '',
+        gname: m.gname || Groups.name(gid), video: !!m.video,
+        members: mine, ts: m.ts || Date.now()
+      };
+    }
+    this._renderOngoingUI(gid);
+  },
+
+  async joinGroup(gid) {
+    if (this.state !== 'idle') { UI.toast('Ya estás en una llamada. Cuelga para unirte a otra.'); return; }
+    const info = this.ongoingInfo(gid);
+    if (!info) { UI.toast('La llamada ya no está activa.'); this._renderOngoingUI(gid); return; }
+    const g = Groups.get(gid);
+    if (!this.peer || this.peer.disconnected) { UI.toast('El servicio de llamadas aún se está conectando. Espera unos segundos.'); return; }
+
+    this._video = !!info.video;
+    try { await this._getLocal(!!info.video); }
+    catch (e) { UI.toast('No se pudo acceder al micrófono/cámara. Revisa los permisos.'); return; }
+
+    this.mode = 'group';
+    this.state = 'connecting';
+    this.g = {
+      gid, gname: (g && g.name) || info.gname || 'Grupo', callId: info.callId,
+      inviter: info.host, members: (info.members || []).filter((u) => u && u !== Auth.me.uid)
+    };
+    delete this.ongoing[gid]; /* ya estoy dentro */
+    this.showOverlay('connecting', this.g.gname);
+
+    /* anunciar mi incorporación: los de uid MENOR me llamarán (regla de malla) */
+    this._publishGrp('joining');
+    this._publishCallState();
+    this._startStateHeartbeat();
+
+    /* y llamo a los uid MAYORES que el mío */
+    this.g.members.forEach((u) => { if (u > Auth.me.uid) this._callMember(u); });
+
+    this._outTimer = setTimeout(() => {
+      if (this.mode === 'group' && (this.state === 'connecting') && !Object.keys(this.streams).length) {
+        UI.toast('La llamada del grupo ya no está activa.');
+        this.hangup();
+      }
+    }, 45000);
+  },
+
+  /* refrescar barra del chat + lista de conversaciones */
+  _renderOngoingUI(gid) {
+    this.renderOngoingBar();
+    if (typeof App !== 'undefined' && App.renderConvoList) { try { App.renderConvoList(); } catch (e) {} }
+  },
+
+  renderOngoingBar() {
+    const bar = $('#grpCallBar');
+    if (!bar) return;
+    let gid = null;
+    const act = Chat.active;
+    if (typeof Chat !== 'undefined' && act && String(act).startsWith('g:')) gid = String(act).slice(2);
+    const info = gid ? this.ongoingInfo(gid) : null;
+    if (!gid || !info || this.inThisCall(gid)) { bar.hidden = true; return; }
+    const names = info.members.slice(0, 2).map((u) => Friends.name(u) || u).join(', ');
+    const more = info.members.length > 2 ? ` +${info.members.length - 2}` : '';
+    $('#gcMembers').textContent = `${info.members.length} ${info.members.length === 1 ? 'persona' : 'personas'} en llamada · ${names}${more}`;
+    bar.hidden = false;
   },
 
   /* ================== eventos del grupo (MQTT) ================== */
@@ -399,10 +531,41 @@ const Calls = {
 
   onGroupEvt(gid, m) {
     if (!m || m.from === Auth.me.uid) return;
+
+    /* ---- libro de llamadas EN CURSO (aunque yo no esté dentro) ---- */
+    const og = this.ongoing[gid];
+    if (og && m.callId === og.callId) {
+      if (m.ev === 'left') {
+        og.members = (og.members || []).filter((u) => u !== m.from);
+        if (!og.members.length) delete this.ongoing[gid];
+        this._renderOngoingUI(gid);
+      } else if (m.ev === 'joining') {
+        if (!og.members.includes(m.from)) og.members.push(m.from);
+        og.ts = Date.now();
+        this._renderOngoingUI(gid);
+      }
+    }
+
     if (!this.g || m.gid !== this.g.gid || m.callId !== this.g.callId) return;
+    if (m.ev === 'joining') {
+      /* alguien se está uniendo a mitad de la llamada */
+      if (!this.g.members.includes(m.from)) this.g.members.push(m.from);
+      if (m.from > Auth.me.uid) this._callMember(m.from); /* regla de malla: yo llamo a los mayores */
+      if (this.state === 'active') {
+        this._renderTiles();
+        UI.toast(`${m.fromName || m.from} se unió a la llamada.`);
+      } else this._renderGrpMembers();
+      return;
+    }
     if (m.ev === 'left') {
       const c = this.conns[m.from];
-      if (c) { try { c.close(); } catch (e) {} } /* _onConnClosed hace el resto */
+      if (c) {
+        try { c.close(); } catch (e) {}
+        /* limpieza INMEDIATA: una conexión nunca respondida puede no
+           emitir 'close' (el oferente se quedaría con un conns[] zombie
+           que bloquearía re-llamar al miembro si decide unirse luego) */
+        this._onConnClosed(m.from);
+      }
       else {
         this.g.members = this.g.members.filter((u) => u !== m.from);
         if (this.state === 'in') {
@@ -411,7 +574,7 @@ const Calls = {
             UI.toast('La llamada del grupo terminó.');
             this.teardown();
           }
-        } else if ((this.state === 'out' || this.state === 'connecting') && !Object.keys(this.streams).length && !this.g.members.length) {
+        } else if (this.state === 'connecting' && !Object.keys(this.streams).length && !this.g.members.length) {
           UI.toast('Nadie se unió a la llamada del grupo.');
           this.teardown();
         } else {
@@ -478,6 +641,7 @@ const Calls = {
     clearTimeout(this._outTimer);
     this._startTimer();
     this.showOverlay('active', this.g.gname);
+    this._publishCallState(); /* la llamada ya está viva: entran los que lleguen tarde */
   },
 
   _onConnClosed(uid) {
@@ -489,14 +653,19 @@ const Calls = {
 
     if (this.mode === 'group' && this.g) {
       this.g.members = this.g.members.filter((u) => u !== uid);
-      if (this.state === 'active' || this.state === 'connecting' || this.state === 'out') {
+      if (this.state === 'active' || this.state === 'connecting') {
         if (!Object.keys(this.conns).length && !Object.keys(this.streams).length) {
           UI.toast('La llamada del grupo terminó.');
           this.teardown();
         } else {
           if (this.state === 'active') this._renderTiles();
-          else if (this.state === 'out' || this.state === 'connecting') this._renderGrpMembers();
+          else this._renderGrpMembers();
         }
+      } else if (this.state === 'out') {
+        /* sigo LLAMANDO (nadie ha entrado aún o alguien declinó):
+           la llamada NO muere — quien declinó puede UNIRSE desde el
+           chat; el _grpTimeout la cierra si al final no entra nadie */
+        this._renderGrpMembers();
       }
     } else if (this.state !== 'idle') {
       this.onClosed();
@@ -526,7 +695,28 @@ const Calls = {
     clearTimeout(this._outTimer);
     clearInterval(this._durTimer);
     clearInterval(this._dummyTimer);
+    clearInterval(this._stateTimer);
     this._dummyTimer = null;
+
+    /* estado retenido de la llamada de grupo: actualizo la lista de
+       participantes sin mí; si era el último → limpio el estado
+       (la barra «Unirse» desaparece para todos).
+       OJO: si solo estaba SONANDO (rechacé) nunca estuve dentro →
+       no tocar el estado: lo mantiene quien está en la llamada.     */
+    if (this.mode === 'group' && this.g && this.state !== 'in') {
+      const rest = [...new Set(Object.keys(this.streams))].filter((u) => u !== Auth.me.uid);
+      if (rest.length) {
+        Mqtt.publish(T.gcall(this.g.gid), {
+          t: 'gstate', gid: this.g.gid, callId: this.g.callId,
+          host: this.g.inviter, hostName: (this.g.inviter === Auth.me.uid ? Auth.me.name : Friends.name(this.g.inviter)) || '',
+          gname: this.g.gname, video: this._video,
+          members: rest, from: Auth.me.uid, ts: Date.now()
+        }, { retain: true, expiry: 300 });
+      } else {
+        Mqtt.publish(T.gcall(this.g.gid), '', { retain: true }); /* última en salir: limpiar */
+      }
+    }
+
     Object.values(this.conns).forEach((c) => { try { c.close(); } catch (e) {} });
     this._pending.forEach((c) => { try { c.close(); } catch (e) {} });
     this.conns = {}; this.streams = {}; this.media = {}; this._pending = []; this._retries = {};
@@ -547,6 +737,8 @@ const Calls = {
     this._clearMediaSession();
     const b = $('#callBanner');
     if (b) b.hidden = true;
+    const gcb = $('#grpCallBar');
+    if (gcb) gcb.hidden = true;
     const tiles = $('#callTiles');
     if (tiles) { tiles.innerHTML = ''; tiles.hidden = true; }
     const gm = $('#callGrpMembers');
@@ -554,6 +746,8 @@ const Calls = {
     this.hideOverlay();
     this._ending = false;
     if (typeof App !== 'undefined') App.updateTitle();
+    /* re-evaluar si hay otra llamada en curso visible en el chat */
+    this.renderOngoingBar();
   },
 
   /* ================== micrófono / cámara / pantalla ================== */

@@ -6,9 +6,9 @@
 <meta id="metaTheme" name="theme-color" content="#0a1014">
 <meta name="description" content="Nexo — mensajería, grupos, llamadas, mensajes de voz y notificaciones en tiempo real. 100% serverless, funciona desde GitHub Pages.">
 <title>Nexo · Chat en tiempo real</title>
-<link rel="icon" href="./favicon.svg?v=4" type="image/svg+xml">
-<link rel="manifest" href="./manifest.json?v=4">
-<link rel="apple-touch-icon" href="./icons/icon-180.png?v=4">
+<link rel="icon" href="./favicon.svg?v=5" type="image/svg+xml">
+<link rel="manifest" href="./manifest.json?v=5">
+<link rel="apple-touch-icon" href="./icons/icon-180.png?v=5">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,7 +16,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./css/style.css?v=4">
+<link rel="stylesheet" href="./css/style.css?v=5">
 </head>
 <body>
 <noscript><div class="noscript">Nexo necesita JavaScript para funcionar.</div></noscript>
@@ -58,6 +58,8 @@
   <symbol id="i-chev-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
   <symbol id="i-up" viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></symbol>
   <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="8.5" cy="9.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="9.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16.5" cy="13.5" r="1.1" fill="currentColor" stroke="none"/><path d="M12 22a10 10 0 0 1 0-20 c2.5 0 3 1.5 2 2.5-1.2 1.2-.4 3 1.3 3H18a3 3 0 0 1 3 3c0 6-4 11.5-9 11.5z"/></symbol>
+  <symbol id="i-gamepad" viewBox="0 0 24 24"><line x1="6" y1="12" x2="10" y2="12"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="15" y1="13" x2="15.01" y2="13"/><line x1="18" y1="11" x2="18.01" y2="11"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.158C2.604 9.58 2 13.904 2 14.5a3.5 3.5 0 0 0 6.645 1.519l.628-1.269a2 2 0 0 1 1.79-1.106h1.874a2 2 0 0 1 1.79 1.106l.628 1.269A3.5 3.5 0 0 0 22 14.5c0-.596-.604-4.92-.685-5.752-.007-.057-.011-.106-.017-.158A4 4 0 0 0 17.32 5z"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></symbol>
 </svg>
 
 <!-- ============ Fallo de CDN ============ -->
@@ -74,7 +76,7 @@
     <div class="hero-blobs"><span></span><span></span><span></span></div>
     <div class="hero-content">
       <div class="hero-brand">
-        <svg width="44" height="44" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="lg1" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".55" stop-color="#14b8a6"/><stop offset="1" stop-color="#059669"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#lg1)"/><path d="M15.5 17.5h17a3.5 3.5 0 0 1 3.5 3.5v7a3.5 3.5 0 0 1-3.5 3.5h-7.6l-5.4 4.6v-4.6h-4A3.5 3.5 0 0 1 12 28v-7a3.5 3.5 0 0 1 3.5-3.5Z" fill="#fff" fill-opacity=".96"/><circle cx="20.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="24.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="28.5" cy="24.5" r="1.7" fill="#0d9488"/></svg>
+        <svg class="hero-logo" width="46" height="46" viewBox="0 0 48 48" fill="none" aria-hidden="true"><defs><linearGradient id="lg1" x1="6" y1="6" x2="42" y2="42" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".5" stop-color="#14b8a6"/><stop offset="1" stop-color="#047857"/></linearGradient></defs><rect width="48" height="48" rx="14" fill="url(#lg1)"/><path d="M15.5 33.5 V15.5 L32.5 33.5 V15.5" stroke="#fff" stroke-opacity=".97" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="15.5" cy="15.5" r="2.7" fill="#0d9488"/><circle cx="32.5" cy="33.5" r="2.7" fill="#0d9488"/></svg>
         <span>Nexo</span>
       </div>
       <h1>Conversa sin fronteras,<br><em>directo de persona a persona.</em></h1>
@@ -135,10 +137,11 @@
   <!-- Barra lateral de navegación -->
   <nav id="rail" aria-label="Navegación principal">
     <div class="rail-logo" title="Nexo">
-      <svg width="34" height="34" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="lg2" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".55" stop-color="#14b8a6"/><stop offset="1" stop-color="#059669"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#lg2)"/><path d="M15.5 17.5h17a3.5 3.5 0 0 1 3.5 3.5v7a3.5 3.5 0 0 1-3.5 3.5h-7.6l-5.4 4.6v-4.6h-4A3.5 3.5 0 0 1 12 28v-7a3.5 3.5 0 0 1 3.5-3.5Z" fill="#fff" fill-opacity=".96"/><circle cx="20.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="24.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="28.5" cy="24.5" r="1.7" fill="#0d9488"/></svg>
+      <svg width="34" height="34" viewBox="0 0 48 48" fill="none" aria-hidden="true"><defs><linearGradient id="lg2" x1="6" y1="6" x2="42" y2="42" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".5" stop-color="#14b8a6"/><stop offset="1" stop-color="#047857"/></linearGradient></defs><rect width="48" height="48" rx="14" fill="url(#lg2)"/><path d="M15.5 33.5 V15.5 L32.5 33.5 V15.5" stroke="#fff" stroke-opacity=".97" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="15.5" cy="15.5" r="2.7" fill="#0d9488"/><circle cx="32.5" cy="33.5" r="2.7" fill="#0d9488"/></svg>
     </div>
     <button class="rail-btn active" data-view="chats" title="Chats" aria-label="Chats"><svg class="icon"><use href="#i-chat"/></svg></button>
     <button class="rail-btn" data-view="friends" title="Amigos" aria-label="Amigos"><svg class="icon"><use href="#i-users"/></svg></button>
+    <button class="rail-btn" data-view="games" title="Juegos" aria-label="Juegos"><svg class="icon"><use href="#i-gamepad"/></svg></button>
     <button class="rail-btn" data-view="settings" title="Ajustes" aria-label="Ajustes"><svg class="icon"><use href="#i-sliders"/></svg></button>
     <div class="rail-spacer"></div>
     <button id="themeToggle" class="rail-btn" title="Cambiar tema" aria-label="Cambiar tema"><svg class="icon"><use href="#i-moon"/></svg></button>
@@ -171,6 +174,8 @@
         <div id="friendsSections"></div>
       </div>
 
+      <div id="viewGames" class="view" hidden></div>
+
       <div id="viewSettings" class="view" hidden></div>
       <input type="file" id="avatarInput" accept="image/*" hidden>
       <input type="file" id="wpInput" accept="image/*" hidden>
@@ -180,7 +185,7 @@
   <!-- Zona de conversación -->
   <main id="chatArea">
     <div id="emptyState">
-      <svg width="88" height="88" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="lg3" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".55" stop-color="#14b8a6"/><stop offset="1" stop-color="#059669"/></linearGradient></defs><rect width="48" height="48" rx="13" fill="url(#lg3)"/><path d="M15.5 17.5h17a3.5 3.5 0 0 1 3.5 3.5v7a3.5 3.5 0 0 1-3.5 3.5h-7.6l-5.4 4.6v-4.6h-4A3.5 3.5 0 0 1 12 28v-7a3.5 3.5 0 0 1 3.5-3.5Z" fill="#fff" fill-opacity=".96"/><circle cx="20.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="24.5" cy="24.5" r="1.7" fill="#0d9488"/><circle cx="28.5" cy="24.5" r="1.7" fill="#0d9488"/></svg>
+      <svg width="88" height="88" viewBox="0 0 48 48" fill="none" aria-hidden="true"><defs><linearGradient id="lg3" x1="6" y1="6" x2="42" y2="42" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2dd4bf"/><stop offset=".5" stop-color="#14b8a6"/><stop offset="1" stop-color="#047857"/></linearGradient></defs><rect width="48" height="48" rx="14" fill="url(#lg3)"/><path d="M15.5 33.5 V15.5 L32.5 33.5 V15.5" stroke="#fff" stroke-opacity=".97" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="15.5" cy="15.5" r="2.7" fill="#0d9488"/><circle cx="32.5" cy="33.5" r="2.7" fill="#0d9488"/></svg>
       <h3>Selecciona una conversación</h3>
       <p>Envía mensajes e imágenes, o inicia una llamada con tus amigos.</p>
     </div>
@@ -204,6 +209,16 @@
           <button id="btnLeaveGroup" class="icon-btn danger grp-only" title="Salir del grupo" aria-label="Salir del grupo"><svg class="icon"><use href="#i-logout"/></svg></button>
         </div>
       </header>
+
+      <!-- Llamada de grupo en curso: UNIRSE aunque no hayas entrado al principio -->
+      <div id="grpCallBar" hidden>
+        <span class="gc-live"><svg class="icon"><use href="#i-phone"/></svg></span>
+        <div class="gc-info">
+          <strong>Llamada de grupo en curso</strong>
+          <span id="gcMembers"></span>
+        </div>
+        <button id="gcJoin" class="gc-join"><svg class="icon"><use href="#i-phone"/></svg>Unirse</button>
+      </div>
 
       <div id="typingRow" hidden><span class="typing-dots"><i></i><i></i><i></i></span><em id="typingName"></em>&nbsp;está escribiendo…</div>
 
@@ -238,6 +253,18 @@
           <button id="recSend" class="send-btn" title="Enviar mensaje de voz" aria-label="Enviar mensaje de voz"><svg class="icon"><use href="#i-send"/></svg></button>
         </div>
       </footer>
+    </div>
+
+    <!-- Escenario de JUEGO: corre dentro de Nexo -->
+    <div id="gameStage" hidden>
+      <header class="gs-head">
+        <button id="gsBack" class="icon-btn" title="Volver a Nexo" aria-label="Volver a Nexo"><svg class="icon"><use href="#i-back"/></svg></button>
+        <div class="gs-title"><strong id="gsName"></strong><span id="gsTag"></span></div>
+        <a id="gsExt" class="icon-btn" target="_blank" rel="noopener" title="Abrir en una pestaña nueva" aria-label="Abrir en una pestaña nueva"><svg class="icon"><use href="#i-external"/></svg></a>
+      </header>
+      <div class="gs-frame">
+        <iframe id="gsFrame" allow="fullscreen; autoplay; gamepad; clipboard-write" title="Juego"></iframe>
+      </div>
     </div>
   </main>
 
@@ -308,24 +335,25 @@
     else if (document.getElementById('cdnFail')) document.getElementById('cdnFail').hidden = true;
   })();
 </script>
-<script src="./js/util.js?v=4"></script>
-<script src="./js/storage.js?v=4"></script>
-<script src="./js/crypto.js?v=4"></script>
-<script src="./js/sound.js?v=4"></script>
-<script src="./js/spam.js?v=4"></script>
-<script src="./js/mqtt-service.js?v=4"></script>
-<script src="./js/presence.js?v=4"></script>
-<script src="./js/push.js?v=4"></script>
-<script src="./js/notify.js?v=4"></script>
-<script src="./js/auth.js?v=4"></script>
-<script src="./js/friends.js?v=4"></script>
-<script src="./js/profile.js?v=4"></script>
-<script src="./js/groups.js?v=4"></script>
-<script src="./js/voice.js?v=4"></script>
-<script src="./js/stickers.js?v=4"></script>
-<script src="./js/chat.js?v=4"></script>
-<script src="./js/calls.js?v=4"></script>
-<script src="./js/theme.js?v=4"></script>
-<script src="./js/app.js?v=4"></script>
+<script src="./js/util.js?v=5"></script>
+<script src="./js/storage.js?v=5"></script>
+<script src="./js/crypto.js?v=5"></script>
+<script src="./js/sound.js?v=5"></script>
+<script src="./js/spam.js?v=5"></script>
+<script src="./js/mqtt-service.js?v=5"></script>
+<script src="./js/presence.js?v=5"></script>
+<script src="./js/push.js?v=5"></script>
+<script src="./js/notify.js?v=5"></script>
+<script src="./js/auth.js?v=5"></script>
+<script src="./js/friends.js?v=5"></script>
+<script src="./js/profile.js?v=5"></script>
+<script src="./js/groups.js?v=5"></script>
+<script src="./js/voice.js?v=5"></script>
+<script src="./js/stickers.js?v=5"></script>
+<script src="./js/games.js?v=5"></script>
+<script src="./js/chat.js?v=5"></script>
+<script src="./js/calls.js?v=5"></script>
+<script src="./js/theme.js?v=5"></script>
+<script src="./js/app.js?v=5"></script>
 </body>
 </html>

@@ -113,6 +113,8 @@ const Chat = {
     this.renderMessages(key);
     this.clearUnread(key);
     if (this.kind(key).type === 'dm') Spam.reset(key);
+    /* barra de llamada de grupo en curso («Unirse») */
+    if (typeof Calls !== 'undefined' && Calls.renderOngoingBar) Calls.renderOngoingBar();
     const inp = $('#msgInput');
     if (inp && window.innerWidth > 920) inp.focus();
   },
