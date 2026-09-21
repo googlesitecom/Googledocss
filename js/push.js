@@ -127,6 +127,15 @@ const Push = {
       if (this.sub) {
         this.state = 'on';
         this.publishSub();
+      } else if (('Notification' in window) && Notification.permission === 'granted') {
+        /* el permiso ya fue concedido pero se perdió la suscripción
+           (p. ej. el push service la rotó): re-suscribir sin gesto */
+        try {
+          const key = b64urlToBytes(VAPID.pub);
+          this.sub = await this.swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+          this.state = 'on';
+          this.publishSub();
+        } catch (e) { console.warn('[push] resubscribe', e); }
       }
     } catch (e) {
       console.warn('[push] init', e);
@@ -185,19 +194,22 @@ const Push = {
   },
 
   /* ---------- enviar una notificación push a un uid ----------
-     Devuelve true si se entregó al push service. */
-  async notify(uid, title, body, route = {}) {
+     Devuelve true si se entregó al push service.
+     opts.force: ignora el enfriamiento (prueba desde Ajustes). */
+  async notify(uid, title, body, route = {}, opts = {}) {
     try {
       if (!uid) return false;
-      if (typeof Settings !== 'undefined' && Settings && Settings.browser === false) return false;
 
       const last = this._cooldown.get(uid) || 0;
-      if (Date.now() - last < this.COOLDOWN_MS) return false;
+      if (!opts.force && Date.now() - last < this.COOLDOWN_MS) return false;
 
       const sub = await this.getSub(uid);
       if (!sub) return false;
 
-      const payload = JSON.stringify({ title: truncate(title, 90), body: truncate(body, 140), route });
+      /* tag por chat: agrupa las notificaciones del mismo chat y evita
+         duplicados visuales con la notificación de la propia página */
+      const tag = route.chat ? ('nexo-msg-' + route.chat) : (route.friends ? 'nexo-sys-friends' : 'nexo-sys');
+      const payload = JSON.stringify({ title: truncate(title, 90), body: truncate(body, 140), tag, route });
       if (strBytes(payload).length > 3000) throw new Error('payload excesivo');
 
       const bodyBytes = await encryptPayload(sub, payload);
@@ -226,7 +238,7 @@ const Push = {
           console.warn('[push] entrega fallida', e2);
         }
       }
-      if (ok) this._cooldown.set(uid, Date.now());
+      if (ok || opts.force) this._cooldown.set(uid, Date.now());
       return ok;
     } catch (e) {
       console.warn('[push] notify', e);

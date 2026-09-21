@@ -2,7 +2,16 @@
    Recibe push del sistema operativo aunque la página esté CERRADA
    y muestra la notificación. Al tocarla, abre/enfoca la app y navega
    al chat correspondiente. También permite notificaciones en Android
-   (donde Notification API desde página no funciona).            */
+   (donde Notification API desde página no funciona).
+
+   DEDUPLICACIÓN POR VISIBILIDAD:
+   - Si hay una ventana de Nexo VISIBLE (el usuario la está viendo),
+     la propia página ya notifica dentro (toast/centro); el push se
+     marca como silencioso con el mismo tag por chat (se agrupa y no
+     suena), y se avisa a la página por postMessage.
+   - Si todas las ventanas están OCULTAS o CERRADAS → notificación
+     completa con sonido y renotify: es el caso "no estoy con la
+     pestaña/app abierta".                                                        */
 'use strict';
 
 const APP_ICON = './icons/icon-192.png';
@@ -17,16 +26,41 @@ self.addEventListener('push', (event) => {
     data = { title: 'Nexo', body: 'Tienes mensajes nuevos' };
   }
   const title = data.title || 'Nexo';
-  const opts = {
-    body: data.body || '',
-    icon: APP_ICON,
-    badge: APP_ICON,
-    tag: data.tag || 'nexo',
-    renotify: true,
-    data: { route: data.route || {} },
-    silent: false
-  };
-  event.waitUntil(self.registration.showNotification(title, opts));
+  const route = data.route || {};
+  const tag = data.tag || (route.chat ? 'nexo-msg-' + route.chat : 'nexo');
+
+  event.waitUntil((async () => {
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const visible = cs.some((c) => c.visibilityState === 'visible');
+
+    if (visible && !route.test) {
+      /* la app está abierta y a la vista: ella ya avisa dentro */
+      cs.forEach((c) => { try { c.postMessage({ nexoPushedNotif: data }); } catch (e) {} });
+      /* notificación discreta (requisito userVisibleOnly de Chrome):
+         silenciosa, sin renotify y con el mismo tag → se agrupa con
+         la que pueda haber generado la propia página              */
+      return self.registration.showNotification(title, {
+        body: data.body || '',
+        icon: APP_ICON,
+        badge: APP_ICON,
+        tag,
+        renotify: false,
+        silent: true,
+        data: { route }
+      });
+    }
+
+    /* pestaña oculta o app cerrada → notificación completa */
+    return self.registration.showNotification(title, {
+      body: data.body || '',
+      icon: APP_ICON,
+      badge: APP_ICON,
+      tag,
+      renotify: true,
+      silent: false,
+      data: { route }
+    });
+  })());
 });
 
 /* ---------- clic en la notificación ---------- */
@@ -37,7 +71,7 @@ self.addEventListener('notificationclick', (event) => {
     const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const c of cs) {
       if ('focus' in c) {
-        c.focus();
+        try { await c.focus(); } catch (e) {}
         c.postMessage({ nexoRoute: route });
         return;
       }

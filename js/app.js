@@ -175,8 +175,10 @@ const App = {
     html += `<div class="f-section"><h4>Mis amigos <span class="n-badge">${all.length}</span></h4>`;
     html += all.length ? all.map((f) => `
       <div class="f-row">
-        <div class="avatar" style="--h:${hueOf(f.uid)}">${Avatars.html(f.uid, f.name)}</div>
-        <div class="f-info"><strong>${esc(f.name)}</strong><span>@${esc(f.uid)}</span></div>
+        <button class="f-ident" data-act="profile" data-uid="${esc(f.uid)}" title="Ver perfil">
+          <div class="avatar" style="--h:${hueOf(f.uid)}">${Avatars.html(f.uid, f.name)}</div>
+          <div class="f-info"><strong>${esc(f.name)}</strong><span>@${esc(f.uid)}</span></div>
+        </button>
         <span class="pres-dot ${Presence.isOnline(f.uid) ? 'on' : ''}" title="${Presence.status(f.uid)}"></span>
         <div class="f-acts">
           <button class="f-btn chat" data-act="chat" data-uid="${esc(f.uid)}"><svg class="icon"><use href="#i-chat"/></svg>Chatear</button>
@@ -213,7 +215,10 @@ const App = {
             </div>
           </div>
         </div>
-        <button id="btnSaveName" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px">Guardar nombre</button>
+        <label class="bio-field">Acerca de
+          <textarea id="setBio" class="set-input bio" maxlength="200" rows="2" placeholder="Ej. Disponible para hablar de día">${esc(Auth.me.bio || '')}</textarea>
+        </label>
+        <button id="btnSaveName" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px">Guardar cambios</button>
       </div>
 
       <div class="set-card">
@@ -238,7 +243,7 @@ const App = {
         ${pushOn ? `<p class="desc" style="margin:8px 0 0;color:var(--green)">Funciona con la app cerrada. En iPhone/iPad, instala Nexo en la pantalla de inicio para recibirlas.</p>` : ''}
         ${perm === 'default' && !pushOn ? `<button id="btnPerm" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px">Activar notificaciones del navegador</button>` : ''}
         ${perm === 'denied' ? `<p class="desc" style="margin:10px 0 0;color:var(--red)">Permiso bloqueado: actívalo en los ajustes del sitio de tu navegador.</p>` : ''}
-        <button id="btnTestNotif" class="f-btn chat" style="width:100%;justify-content:center;margin-top:10px">Probar notificación</button>
+        <button id="btnTestNotif" class="f-btn chat" style="width:100%;justify-content:center;margin-top:10px">Probar notificación (envía un push real)</button>
       </div>
 
       <div class="set-card">
@@ -321,7 +326,8 @@ const App = {
   },
   handleEvt(m) {
     if (!m || !m.t) return;
-    if (m.t === 'ack') Chat.markAcked(m.id);
+    if (m.t === 'ack') Chat.markAcked(m.id, m.from);
+    else if (m.t === 'gack') Chat.ackFrom(m.from, m.id);
     else if (m.t === 'typing') Chat.showTyping(m.from, m.name || m.from);
     else if (m.t === 'unfriend') Friends.onUnfriend(m.from);
     else if (m.t === 'gleft') Groups.onMemberLeft(m);
@@ -460,10 +466,11 @@ const App = {
     /* crear grupo */
     $('#btnNewGroup').addEventListener('click', () => Groups.openCreateModal());
 
-    /* cabecera de grupo → miembros */
+    /* cabecera del chat → perfil (DM) o miembros (grupo) */
     $('#chatPeer').addEventListener('click', () => {
       const k = Chat.kind(Chat.active);
       if (k.type === 'group' && k.gid) Groups.openMembersModal(k.gid);
+      else if (k.uid) ProfileCard.open(k.uid);
     });
     $('#btnLeaveGroup').addEventListener('click', () => {
       const k = Chat.kind(Chat.active);
@@ -472,6 +479,9 @@ const App = {
       UI.confirm('Salir del grupo', `¿Seguro que quieres salir de «${g ? g.name : ''}»?`, 'Salir', true)
         .then((ok) => { if (ok) Groups.leave(k.gid); });
     });
+
+    /* mi avatar del lateral → mi perfil */
+    $('#myAvatar').addEventListener('click', () => ProfileCard.open(Auth.me.uid));
 
     /* amigos: búsqueda y acciones */
     $('#btnSearch').addEventListener('click', () => App.doSearch());
@@ -491,6 +501,7 @@ const App = {
       }
       else if (act === 'chat') App.openChat(uid);
       else if (act === 'call') Calls.start(uid, false);
+      else if (act === 'profile') ProfileCard.open(uid);
       else if (act === 'remove') {
         UI.confirm('Eliminar amigo', `¿Eliminar a ${Friends.name(uid)}? Dejaréis de ser amigos.`, 'Eliminar', true)
           .then((ok) => { if (ok) Friends.removeFriend(uid); });
@@ -536,8 +547,11 @@ const App = {
       if (files.length) Stickers.addFiles(files);
     });
 
-    /* al hacer clic en los mensajes: cerrar el panel de stickers */
+    /* al hacer clic en los mensajes: stickers, media, voz y PERFILES */
     $('#messages').addEventListener('click', (e) => {
+      /* avatar o nombre del autor (grupos) → ver su perfil */
+      const pu = e.target.closest('[data-puid]');
+      if (pu && pu.dataset.puid) { ProfileCard.open(pu.dataset.puid); return; }
       const fav = e.target.closest('.stk-fav');
       if (fav) {
         const id = fav.dataset.fav;
@@ -626,7 +640,8 @@ const App = {
       if (btn.id === 'btnSaveName') {
         try {
           await Auth.updateName($('#setName').value);
-          UI.toast('Nombre actualizado.');
+          await Auth.updateBio(($('#setBio') && $('#setBio').value) || '');
+          UI.toast('Perfil actualizado: tus amigos verán los cambios al instante.');
           App.renderAll();
         } catch (ex) { UI.toast(ex.message); }
       } else if (btn.id === 'btnAvatar') {
@@ -646,10 +661,21 @@ const App = {
           App.renderSettings();
         }
       } else if (btn.id === 'btnTestNotif') {
-        if ('Notification' in window && Notification.permission === 'granted') {
+        /* prueba REAL: push Web completo hacia mi propia suscripción
+           (emisor → push service → Service Worker → notificación) */
+        let pushed = false;
+        try {
+          pushed = await Push.notify(Auth.me.uid, 'Notificación de prueba de Nexo',
+            'Así te avisaremos de tus mensajes con la app cerrada.',
+            { chat: Chat.active || '', name: Auth.me.name, test: true }, { force: true });
+        } catch (e) {}
+        if (!pushed) {
+          /* sin suscripción push: mostrar la notificación local clásica */
           Notify.browser('Notificación de prueba de Nexo', 'Así se verán tus avisos de mensajes.', { name: Auth.me.name });
+          UI.toast('Prueba local enviada (activa el push para probar también sin abrir la app).');
+        } else {
+          UI.toast('Push real enviado: debería aparecer aunque cierres Nexo.');
         }
-        UI.toast('Notificación de prueba enviada');
         if (Settings.sound) Sound.msg();
       } else if (btn.id === 'btnAccReset') {
         Theme.resetAccent();
@@ -683,6 +709,12 @@ const App = {
         const d = e.data || {};
         if (d.nexoRoute) App.handleRoute(d.nexoRoute);
         if (d.nexoPushSubChanged && Push.sub) Push.publishSub();
+        if (d.nexoPushedNotif) {
+          /* push recibido con la app visible: el SW lo marcó silencioso
+             porque aquí dentro ya avisamos — confirmación discreta */
+          const t = d.nexoPushedNotif.title || 'Nexo';
+          UI.toast(`Push entrante: ${t}`, { icon: 'bell' });
+        }
       });
     }
 

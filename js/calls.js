@@ -8,9 +8,16 @@
      conexiones. Las llamadas de solo audio llevan una pista de video
      "dummy" (canvas negro) para que SIEMPRE exista un sender de video
      y se pueda sustituir al compartir pantalla o encender la cámara.
-   - SEGUNDO PLANO: minimizar la llamada → banner flotante estilo
-     WhatsApp (la llamada sigue activa; el audio vive en elementos
-     <audio> persistentes que suenan aunque el overlay esté oculto).  */
+   - SEGUNDO PLANO REAL (multi-pestaña / multi-app):
+     · Document Picture-in-Picture API (Chrome/Edge 116+): al minimizar
+       se abre una VENTANA FLOTANTE siempre visible que PERSISTE mientras
+       cambias de pestaña o de aplicación, con video, cronómetro y
+       controles (micro, cámara, pantalla, colgar).
+     · Media Session API: el sistema operativo muestra la llamada como
+       medios en curso (notificación con colgar/silenciar en Android) y
+       el audio remoto sigue sonando con la app en segundo plano.
+     · Navegadores sin Document PiP → banner interno estilo WhatsApp
+       (el audio también continúa con la pestaña oculta).                 */
 'use strict';
 
 const Calls = {
@@ -41,6 +48,14 @@ const Calls = {
   _durTimer: null,
   _t0: 0,
   _minimized: false,
+
+  /* Picture-in-Picture del documento (ventana flotante multi-pestaña) */
+  _pipWin: null,       /* window flotante o null */
+  _pipEls: null,       /* referencias a su UI */
+  _pipVideoOn: false,  /* ¿se está mostrando video remoto en el PiP? */
+  _pipClosing: false,  /* cierre intencional (no restaurar) */
+  _pipGrpSig: '',      /* firma del conjunto de participantes (refresco puntual) */
+  _msSet: false,       /* Media Session configurada */
 
   init() {
     if (this.peer || !Auth.me) return;
@@ -512,7 +527,6 @@ const Calls = {
     clearInterval(this._durTimer);
     clearInterval(this._dummyTimer);
     this._dummyTimer = null;
-
     Object.values(this.conns).forEach((c) => { try { c.close(); } catch (e) {} });
     this._pending.forEach((c) => { try { c.close(); } catch (e) {} });
     this.conns = {}; this.streams = {}; this.media = {}; this._pending = []; this._retries = {};
@@ -529,6 +543,8 @@ const Calls = {
     this.state = 'idle'; this.mode = null; this.meta = null; this.g = null; this._invite = null;
     this._video = false; this._t0 = 0; this._minimized = false;
 
+    this._closePip();
+    this._clearMediaSession();
     const b = $('#callBanner');
     if (b) b.hidden = true;
     const tiles = $('#callTiles');
@@ -551,6 +567,7 @@ const Calls = {
       btn.querySelector('use').setAttribute('href', next ? '#i-mic' : '#i-mic-off');
     }
     this._broadcastMedia();
+    this._pipSyncControls();
     if (this.mode === 'group' && this.state === 'active') this._renderTiles();
   },
 
@@ -568,6 +585,7 @@ const Calls = {
       }
       const lv = $('#localVideo');
       if (lv) lv.style.visibility = next ? 'visible' : 'hidden';
+      this._pipSyncControls();
       return;
     }
     /* llamada de audio (o compartiendo pantalla): encender la cámara */
@@ -580,6 +598,8 @@ const Calls = {
       const lv = $('#localVideo');
       if (lv) { try { lv.srcObject = this.localStream; lv.play().catch(() => {}); } catch (e) {} lv.style.visibility = 'visible'; }
       this._broadcastMedia();
+      this._pipSyncControls();
+      this._pipSyncMedia();
       if (this.mode === 'group' && this.state === 'active') this._renderTiles();
     } catch (e) {
       UI.toast('No se pudo acceder a la cámara.');
@@ -602,6 +622,8 @@ const Calls = {
       const btn = $('#callControls [data-act="screen"]');
       if (btn) btn.classList.add('toggled');
       this._broadcastMedia();
+      this._pipSyncControls();
+      this._pipSyncMedia();
       if (this.mode === 'group' && this.state === 'active') this._renderTiles();
       UI.toast('Compartiendo tu pantalla.');
     } catch (e) {
@@ -625,6 +647,8 @@ const Calls = {
     const btn = $('#callControls [data-act="screen"]');
     if (btn) btn.classList.remove('toggled');
     this._broadcastMedia();
+    this._pipSyncControls();
+    this._pipSyncMedia();
     if (this.mode === 'group' && this.state === 'active') this._renderTiles();
     UI.toast('Dejaste de compartir la pantalla.');
   },
@@ -648,12 +672,26 @@ const Calls = {
     });
   },
 
-  /* ================== segundo plano (banner) ================== */
+  /* ================== segundo plano (PiP multi-pestaña / banner) ================== */
+  _canPip() { return typeof window !== 'undefined' && 'documentPictureInPicture' in window; },
+
   minimize() {
     if (this.state === 'idle' || this.state === 'in') return;
     this._minimized = true;
     const ov = $('#callOverlay');
     if (ov) ov.hidden = true;
+    if (this._canPip()) {
+      /* ventana flotante SIEMPRE VISIBLE: persiste al cambiar de pestaña
+         o de aplicación (Document Picture-in-Picture) */
+      this.openPip().then((ok) => { if (!ok) this._showBanner(); });
+    } else {
+      this._showBanner();
+    }
+    this._tick();
+    if (typeof App !== 'undefined') App.updateTitle();
+  },
+
+  _showBanner() {
     const b = $('#callBanner');
     if (!b) return;
     const name = this.displayName();
@@ -668,15 +706,265 @@ const Calls = {
     }
     $('#cbState').textContent = this.state === 'active' ? 'En llamada' : 'Conectando…';
     b.hidden = false;
-    this._tick();
-    if (typeof App !== 'undefined') App.updateTitle();
   },
 
   restore() {
     this._minimized = false;
     const b = $('#callBanner');
     if (b) b.hidden = true;
+    this._closePip();
     if (this.state !== 'idle') { const ov = $('#callOverlay'); if (ov) ov.hidden = false; }
+  },
+
+  /* ---------- ventana flotante (Document Picture-in-Picture) ---------- */
+  async openPip() {
+    if (this.state === 'idle') return false;
+    if (this._pipWin) { try { this._pipWin.focus(); } catch (e) {} return true; }
+    if (!this._canPip()) return false;
+    try {
+      const win = await documentPictureInPicture.requestWindow({ width: 330, height: 480 });
+      this._pipWin = win;
+      this._buildPip(win);
+      win.addEventListener('pagehide', () => this._onPipClosed());
+      this._tick();
+      return true;
+    } catch (e) {
+      console.warn('[pip]', e);
+      this._pipWin = null;
+      this._pipEls = null;
+      return false;
+    }
+  },
+
+  _buildPip(win) {
+    const doc = win.document;
+    doc.title = 'Nexo · llamada';
+    const isGroup = this.mode === 'group';
+    const name = this.displayName() || 'Llamada';
+    const hue = hueOf(isGroup ? (this.g && this.g.gid) : (this.meta && this.meta.from));
+    const avatarInner = isGroup
+      ? `<span class="g-mark"><svg class="ic"><use href="#i-users"/></svg></span>`
+      : Avatars.html(this.meta.from, name);
+
+    const style = doc.createElement('style');
+    style.textContent = this._pipCSS();
+    doc.head.appendChild(style);
+
+    /* copiar el sprite de iconos de la app al documento flotante */
+    const sprite = document.getElementById('svgSprite');
+    if (sprite) doc.body.appendChild(sprite.cloneNode(true));
+
+    doc.body.insertAdjacentHTML('beforeend', `
+      <div class="pip-call">
+        <div class="pip-head">
+          <div class="pip-av" style="--h:${hue}">${avatarInner}</div>
+          <div class="pip-info"><strong>${esc(name)}</strong><span class="pip-state">Conectando…</span></div>
+        </div>
+        <div class="pip-stage">
+          <video class="pip-video" autoplay playsinline></video>
+          <div class="pip-bigav" style="--h:${hue}">${avatarInner}</div>
+          <div class="pip-grp" ${isGroup ? '' : 'hidden'}></div>
+        </div>
+        <div class="pip-ctrls">
+          <button data-p="mic" title="Silenciar micrófono"><svg class="ic"><use href="#i-mic"/></svg></button>
+          <button data-p="cam" title="Cámara"><svg class="ic"><use href="#i-video"/></svg></button>
+          <button data-p="screen" title="Compartir pantalla"><svg class="ic"><use href="#i-monitor"/></svg></button>
+          <button data-p="expand" title="Volver a Nexo"><svg class="ic"><use href="#i-up"/></svg></button>
+          <button data-p="hangup" class="h" title="Colgar"><svg class="ic"><use href="#i-phone"/></svg></button>
+        </div>
+      </div>`);
+
+    this._pipEls = {
+      state: doc.querySelector('.pip-state'),
+      video: doc.querySelector('.pip-video'),
+      bigav: doc.querySelector('.pip-bigav'),
+      grp: doc.querySelector('.pip-grp'),
+      btns: {
+        mic: doc.querySelector('[data-p="mic"]'),
+        cam: doc.querySelector('[data-p="cam"]'),
+        screen: doc.querySelector('[data-p="screen"]')
+      }
+    };
+
+    /* visibilidad inicial del escenario según modo */
+    this._pipVideoOn = false;
+    this._pipEls.video.style.display = 'none';
+    this._pipEls.bigav.style.display = isGroup ? 'none' : 'grid';
+
+    doc.querySelector('.pip-ctrls').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-p]');
+      if (!b) return;
+      const a = b.dataset.p;
+      if (a === 'mic') this.toggleMic();
+      else if (a === 'cam') this.toggleCam();
+      else if (a === 'screen') this.toggleScreen();
+      else if (a === 'hangup') this.hangup();
+      else if (a === 'expand') {
+        this.restore();
+        try { window.focus(); } catch (err) {}
+      }
+    });
+
+    if (isGroup) this._pipRenderGrp();
+    this._pipSyncMedia();
+    this._pipSyncControls();
+  },
+
+  _pipCSS() {
+    return `
+      *{box-sizing:border-box;margin:0;padding:0}
+      [hidden]{display:none!important}
+      html,body{height:100%;overflow:hidden}
+      body{font-family:Inter,system-ui,-apple-system,sans-serif;color:#fff;
+        background:linear-gradient(165deg,#141b24,#0a0f14);-webkit-user-select:none;user-select:none}
+      .pip-call{display:flex;flex-direction:column;height:100%}
+      .pip-head{display:flex;align-items:center;gap:9px;padding:10px 12px 6px}
+      .pip-av{width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;
+        font-size:12px;font-weight:700;background:hsl(var(--h,170) 45% 36%);overflow:hidden}
+      .pip-av img{width:100%;height:100%;object-fit:cover}
+      .pip-av .ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2}
+      .pip-info{min-width:0;display:grid}
+      .pip-info strong{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .pip-info span{font-size:11px;color:#5eead4;font-weight:600;font-variant-numeric:tabular-nums}
+      .pip-stage{flex:1;position:relative;margin:4px 10px;border-radius:14px;background:#04080b;
+        overflow:hidden;display:grid;place-items:center}
+      .pip-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}
+      .pip-bigav{width:92px;height:92px;border-radius:50%;display:grid;place-items:center;
+        font-size:30px;font-weight:800;background:hsl(var(--h,170) 45% 36%);overflow:hidden;
+        box-shadow:0 0 0 6px rgba(94,234,212,.12)}
+      .pip-bigav img{width:100%;height:100%;object-fit:cover}
+      .pip-grp{width:100%;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:14px;
+        align-content:center;max-height:100%;overflow:auto}
+      .pg-av{position:relative;aspect-ratio:1;border-radius:50%;display:grid;place-items:center;
+        font-size:15px;font-weight:700;background:hsl(var(--h,170) 40% 30%);overflow:hidden;opacity:.45}
+      .pg-av.on{opacity:1;box-shadow:0 0 0 2.5px #2dd4bf}
+      .pg-av img{width:100%;height:100%;object-fit:cover}
+      .pip-ctrls{display:flex;justify-content:center;gap:10px;padding:12px}
+      .pip-ctrls button{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;
+        background:rgba(255,255,255,.13);color:#fff;border:1px solid rgba(255,255,255,.16);
+        cursor:pointer;transition:transform .12s,background .12s}
+      .pip-ctrls button:hover{background:rgba(255,255,255,.26);transform:scale(1.07)}
+      .pip-ctrls button.toggled{background:rgba(255,255,255,.88);color:#111}
+      .pip-ctrls button.h{background:#e11d48;border-color:transparent}
+      .pip-ctrls button.h:hover{background:#f43f5e}
+      .pip-ctrls .ic{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
+        stroke-linecap:round;stroke-linejoin:round}
+      .pip-ctrls button.h .ic{transform:rotate(135deg)}
+      button{font-family:inherit}`;
+  },
+
+  /* el usuario cerró la ventanita manualmente */
+  _onPipClosed() {
+    this._pipWin = null;
+    this._pipEls = null;
+    this._pipVideoOn = false;
+    if (this._pipClosing || this.state === 'idle') return;
+    /* seguir en segundo plano: volver a la app si está a la vista;
+       si no, dejar el banner interno como indicador */
+    if (!document.hidden) {
+      this._minimized = false;
+      const ov = $('#callOverlay');
+      if (ov) ov.hidden = false;
+    } else {
+      this._showBanner();
+    }
+  },
+
+  _closePip() {
+    if (!this._pipWin) return;
+    this._pipClosing = true;
+    try { this._pipWin.close(); } catch (e) {}
+    this._pipWin = null;
+    this._pipEls = null;
+    this._pipVideoOn = false;
+    setTimeout(() => { this._pipClosing = false; }, 300);
+  },
+
+  /* ---------- reflejar el estado de la llamada en el PiP ---------- */
+  _pipRenderGrp() {
+    if (!this._pipEls || !this._pipEls.grp || this.mode !== 'group') return;
+    const me = Auth.me.uid;
+    const others = [...new Set([...((this.g && this.g.members) || []), ...Object.keys(this.streams)])]
+      .filter((u) => u !== me);
+    const items = [['Tú', me, true], ...others.map((u) => [Friends.name(u) || u, u, !!this.streams[u]])];
+    this._pipEls.grp.innerHTML = items.map(([nm, u, on]) => `
+      <div class="pg-av ${on ? 'on' : ''}" style="--h:${hueOf(u)}" title="${esc(nm)}">${Avatars.html(u, nm)}</div>`).join('');
+  },
+
+  _pipSyncMedia() {
+    if (!this._pipEls) return;
+    if (this.mode === 'p2p' && this.meta) {
+      const uid = this.meta.from;
+      const md = this.media[uid] || {};
+      const vid = md.vid || (this._video ? 'cam' : 'none');
+      const wantVideo = (vid === 'cam' || vid === 'screen') && !!this.streams[uid] && this.state === 'active';
+      if (wantVideo !== this._pipVideoOn) {
+        this._pipVideoOn = wantVideo;
+        const v = this._pipEls.video;
+        const av = this._pipEls.bigav;
+        if (wantVideo) {
+          try { v.srcObject = this.streams[uid]; v.play().catch(() => {}); } catch (e) {}
+          v.style.display = 'block';
+          av.style.display = 'none';
+        } else {
+          try { v.srcObject = null; } catch (e) {}
+          v.style.display = 'none';
+          av.style.display = 'grid';
+        }
+      }
+    }
+  },
+
+  _pipSyncControls() {
+    if (!this._pipEls || !this._pipEls.btns) return;
+    const { mic, cam, screen } = this._pipEls.btns;
+    const micOn = !!(this._audioTrack && this._audioTrack.enabled);
+    if (mic) {
+      mic.classList.toggle('toggled', !micOn);
+      mic.querySelector('use').setAttribute('href', micOn ? '#i-mic' : '#i-mic-off');
+    }
+    const camOn = !!this._camTrack && this._camTrack.enabled && !this._screenStream;
+    if (cam) {
+      cam.classList.toggle('toggled', !camOn);
+      cam.querySelector('use').setAttribute('href', camOn ? '#i-video' : '#i-cam-off');
+    }
+    if (screen) screen.classList.toggle('toggled', !!this._screenStream);
+  },
+
+  /* ---------- Media Session: llamada como medios del sistema ---------- */
+  _setMediaSession() {
+    if (!('mediaSession' in navigator) || this._msSet) return;
+    try {
+      const name = this.displayName() || 'Nexo';
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: (this.mode === 'group' ? 'Llamada de grupo · ' : 'Llamada con ') + name,
+        artist: 'Nexo',
+        album: this.mode === 'group' ? 'Llamada grupal' : 'Llamada de voz y video'
+      });
+      navigator.mediaSession.playbackState = 'playing';
+      const acts = {
+        hangup: () => this.hangup(),
+        stop: () => this.hangup(),
+        togglemicrophone: () => this.toggleMic(),
+        togglecamera: () => this.toggleCam()
+      };
+      Object.entries(acts).forEach(([k, fn]) => {
+        try { navigator.mediaSession.setActionHandler(k, fn); } catch (e) {}
+      });
+      this._msSet = true;
+    } catch (e) {}
+  },
+
+  _clearMediaSession() {
+    if (!this._msSet) return;
+    try {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+      ['hangup', 'stop', 'togglemicrophone', 'togglecamera'].forEach((k) => {
+        try { navigator.mediaSession.setActionHandler(k, null); } catch (e) {}
+      });
+    } catch (e) {}
+    this._msSet = false;
   },
 
   /* ================== audio persistente ================== */
@@ -723,10 +1011,31 @@ const Calls = {
       }
     }
     const cb = $('#cbState');
-    if (cb && this._minimized) {
+    if (cb && this._minimized && !this._pipWin) {
       cb.textContent = this.state === 'active'
         ? `En llamada · ${txt}`
         : (this.mode === 'group' ? 'Uniéndose al grupo…' : 'Conectando…');
+    }
+    /* ventana flotante PiP */
+    if (this._pipWin && this._pipEls) {
+      const st = this._pipEls.state;
+      if (st) {
+        if (this.state === 'active') {
+          if (this.mode === 'group') {
+            const n = Object.keys(this.streams).length + 1;
+            st.textContent = `${n} ${n === 1 ? 'participante' : 'participantes'} · ${txt}`;
+          } else st.textContent = `En llamada · ${txt}`;
+        } else st.textContent = this.mode === 'group' ? 'Uniéndose…' : 'Conectando…';
+      }
+      this._pipSyncMedia();
+      /* refrescar los avatares del grupo solo si cambió el conjunto */
+      if (this.mode === 'group' && this.g) {
+        const sig = [...new Set([...(this.g.members || []), ...Object.keys(this.streams)])].sort().join(',');
+        if (sig !== this._pipGrpSig) {
+          this._pipGrpSig = sig;
+          this._pipRenderGrp();
+        }
+      }
     }
   },
 
@@ -736,6 +1045,10 @@ const Calls = {
     if (!this._minimized) ov.hidden = false;
     ov.classList.toggle('ring', st === 'in' || st === 'out');
     const grpMode = this.mode === 'group';
+
+    /* Media Session: la llamada aparece como medios del sistema
+       (audio continúa y hay controles al cambiar de pestaña/app) */
+    if (st !== 'in') this._setMediaSession();
 
     /* p2p: video remoto */
     const rv = $('#remoteVideo');
@@ -801,6 +1114,11 @@ const Calls = {
 
     if (grpMode && st !== 'active') this._renderGrpMembers();
     if (showTiles) this._renderTiles();
+    if (this._pipWin) {
+      this._pipRenderGrp();
+      this._pipSyncMedia();
+      this._pipSyncControls();
+    }
 
     this.renderControls(st);
   },
@@ -871,7 +1189,7 @@ const Calls = {
     const micBtn = () => `<button class="call-btn" data-act="mic" title="Silenciar micrófono"><svg class="icon"><use href="#i-mic"/></svg></button>`;
     const camBtn = () => `<button class="call-btn" data-act="cam" title="Cámara"><svg class="icon"><use href="#i-video"/></svg></button>`;
     const screenBtn = () => `<button class="call-btn ${this._screenStream ? 'toggled' : ''}" data-act="screen" title="Compartir pantalla"><svg class="icon"><use href="#i-monitor"/></svg></button>`;
-    const minBtn = () => `<button class="call-btn" data-act="minimize" title="Seguir en segundo plano"><svg class="icon"><use href="#i-chev-down"/></svg></button>`;
+    const minBtn = () => `<button class="call-btn" data-act="minimize" title="${this._canPip() ? 'Ventana flotante (visible en otras pestañas y apps)' : 'Seguir en segundo plano'}"><svg class="icon"><use href="#i-chev-down"/></svg></button>`;
     const hangBtn = () => `<button class="call-btn hangup" data-act="hangup" title="Colgar"><svg class="icon"><use href="#i-phone"/></svg></button>`;
 
     if (st === 'out' || st === 'connecting') c.innerHTML = minBtn() + hangBtn();

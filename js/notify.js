@@ -125,9 +125,12 @@ const Notify = {
   /* ===================== notificación del navegador (vía SW si existe) ===================== */
   browser(title, body, route = {}) {
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    /* mismo tag por chat que usa el push (sw.js): si ambos llegan,
+       el sistema las AGRUPA en una sola notificación */
+    const tag = route.chat ? 'nexo-msg-' + route.chat : (route.friends ? 'nexo-sys-friends' : 'nexo-sys');
     const opts = {
       body,
-      tag: 'nexo-' + (route.chat ? 'msg' : 'sys'),
+      tag,
       silent: true
     };
     const av = Avatars.get(route.chat && !String(route.chat).startsWith('g:') ? route.chat : '');

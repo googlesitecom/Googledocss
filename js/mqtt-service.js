@@ -169,10 +169,13 @@ const Mqtt = {
     this.connected = false;
   },
 
-  /* Espera un mensaje retenido (búsqueda de usuarios / verificación de cuenta) */
+  /* Espera un mensaje retenido (búsqueda de usuarios / verificación de cuenta).
+     Si el tema ya estaba suscrito (p. ej. presencia/perfil de un amigo),
+     NO se desuscribe al terminar: la suscripción activa se conserva. */
   fetchRetained(topic, timeout = 2600) {
     return new Promise((resolve) => {
       if (!this.client) return resolve(null);
+      const wasSubscribed = this._subs.has(topic);
       let done = false;
       const handler = (t, s) => {
         if (t !== topic || done) return;
@@ -184,7 +187,7 @@ const Mqtt = {
         if (done) return;
         done = true;
         if (this.client) { try { this.client.removeListener('message', handler); } catch (e) {} }
-        this.unsub(topic);
+        if (!wasSubscribed) this.unsub(topic);
         resolve(v);
       };
       this.client.on('message', handler);

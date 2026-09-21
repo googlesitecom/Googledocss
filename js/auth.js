@@ -39,10 +39,10 @@ const Auth = {
     const hash = await deriveKey(pwd, salt, PBKDF2_ITERS);
 
     Mqtt.publish(T.auth(u), { salt, hash, iters: PBKDF2_ITERS, name, created: Date.now() }, { retain: true });
-    Mqtt.publish(T.profile(u), { uid: u, name, updated: Date.now() }, { retain: true });
+    Mqtt.publish(T.profile(u), { uid: u, name, bio: '', updated: Date.now() }, { retain: true });
 
     LS.set(K.session, { uid: u, name, salt, hash, iters: PBKDF2_ITERS });
-    this.me = { uid: u, name };
+    this.me = { uid: u, name, bio: '' };
     return true;
   },
 
@@ -58,14 +58,15 @@ const Auth = {
     if (hash !== rec.hash) throw new Error('Contraseña incorrecta.');
 
     const name = rec.name || u;
-    /* recuperar el perfil (nombre + foto) publicado por el usuario */
+    /* recuperar el perfil (nombre + foto + bio) publicado por el usuario */
     const prof = await Mqtt.fetchRetained(T.profile(u), 2200);
     const av = (prof && prof.av) || null;
+    const bio = (prof && prof.bio) || '';
     /* auto-reparar el perfil retenido por si el broker lo perdió */
-    Mqtt.publish(T.profile(u), { uid: u, name, av: av || undefined, updated: Date.now() }, { retain: true });
+    Mqtt.publish(T.profile(u), { uid: u, name, av: av || undefined, bio, updated: Date.now() }, { retain: true });
 
-    LS.set(K.session, { uid: u, name, av: av || undefined, salt: rec.salt, hash, iters: rec.iters || PBKDF2_ITERS });
-    this.me = { uid: u, name, av: av || undefined };
+    LS.set(K.session, { uid: u, name, av: av || undefined, bio, salt: rec.salt, hash, iters: rec.iters || PBKDF2_ITERS });
+    this.me = { uid: u, name, av: av || undefined, bio };
     return true;
   },
 
@@ -73,7 +74,7 @@ const Auth = {
   resume() {
     const s = this.session();
     if (s && s.uid && s.name) {
-      this.me = { uid: s.uid, name: s.name, av: s.av || undefined };
+      this.me = { uid: s.uid, name: s.name, av: s.av || undefined, bio: s.bio || '' };
       return true;
     }
     return false;
@@ -88,11 +89,11 @@ const Auth = {
           const uid = this.me.uid;
           Mqtt._onReconnect = () => {
             Presence.goOnline();
-            Mqtt.publish(T.profile(uid), { uid, name: Auth.me.name, av: Auth.me.av || undefined, updated: Date.now() }, { retain: true });
+            Mqtt.publish(T.profile(uid), { uid, name: Auth.me.name, av: Auth.me.av || undefined, bio: Auth.me.bio || '', updated: Date.now() }, { retain: true });
             if (Push.sub) Push.publishSub();
           };
           /* re-publicar identidad (auto-reparación del directorio) */
-          Mqtt.publish(T.profile(uid), { uid, name: this.me.name, av: this.me.av || undefined, updated: Date.now() }, { retain: true });
+          Mqtt.publish(T.profile(uid), { uid, name: this.me.name, av: this.me.av || undefined, bio: this.me.bio || '', updated: Date.now() }, { retain: true });
           Presence.goOnline();
           Presence.startTimers();
 
@@ -144,8 +145,19 @@ const Auth = {
     s.name = name;
     LS.set(K.session, s);
     Mqtt.publish(T.auth(s.uid), { salt: s.salt, hash: s.hash, iters: s.iters, name, created: Date.now() }, { retain: true });
-    Mqtt.publish(T.profile(s.uid), { uid: s.uid, name, av: this.me.av || undefined, updated: Date.now() }, { retain: true });
+    Mqtt.publish(T.profile(s.uid), { uid: s.uid, name, av: this.me.av || undefined, bio: this.me.bio || '', updated: Date.now() }, { retain: true });
     App.renderMyAvatar();
+  },
+
+  /* ---- "acerca de" (bio) del perfil ---- */
+  async updateBio(bio) {
+    bio = String(bio || '').trim().slice(0, 200);
+    const s = this.session();
+    if (!s) return;
+    this.me.bio = bio;
+    s.bio = bio;
+    LS.set(K.session, s);
+    Mqtt.publish(T.profile(this.me.uid), { uid: this.me.uid, name: this.me.name, av: this.me.av || undefined, bio, updated: Date.now() }, { retain: true });
   },
 
   /* ---- foto de perfil ---- */
@@ -167,7 +179,7 @@ const Auth = {
     s.av = dataURL;
     LS.set(K.session, s);
     Avatars.set(this.me.uid, dataURL);
-    Mqtt.publish(T.profile(this.me.uid), { uid: this.me.uid, name: this.me.name, av: dataURL, updated: Date.now() }, { retain: true });
+    Mqtt.publish(T.profile(this.me.uid), { uid: this.me.uid, name: this.me.name, av: dataURL, bio: this.me.bio || '', updated: Date.now() }, { retain: true });
     App.renderAll();
     UI.toast('Foto de perfil actualizada. Tus amigos la verán al instante.');
   },
@@ -179,7 +191,7 @@ const Auth = {
     delete s.av;
     LS.set(K.session, s);
     Avatars.remove(this.me.uid);
-    Mqtt.publish(T.profile(this.me.uid), { uid: this.me.uid, name: this.me.name, av: '', updated: Date.now() }, { retain: true });
+    Mqtt.publish(T.profile(this.me.uid), { uid: this.me.uid, name: this.me.name, av: '', bio: this.me.bio || '', updated: Date.now() }, { retain: true });
     App.renderAll();
     UI.toast('Foto de perfil eliminada.');
   },

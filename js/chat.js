@@ -45,6 +45,7 @@ const Chat = {
   _lastTypingSent: 0,
   _objUrls: {},
   _voice: {},        /* msgId -> {audio, btn, wave, durEl} */
+  _pushPending: new Map(), /* msgId -> {targets:Set<uid>, title, body, route, timer} */
 
   /* ================= tipo de chat ================= */
   kind(key) {
@@ -190,24 +191,65 @@ const Chat = {
     this.afterSend(key, m);
   },
 
-  /* push a desconectados + anti-spam en origen */
+  /* push a quien no pueda ver el mensaje + anti-spam en origen
+     ----------------------------------------------------------------
+     Estrategia "acuse de recibo":
+     - Destinatario DESCONECTADO → push inmediato (no va a ack-ear).
+     - Destinatario conectado → se espera 8 s por su ack (también con la
+       pestaña oculta pero viva). Sin ack = pestaña cerrada/congelada
+       → push. Con ack = la app lo recibió y ya avisó por su cuenta
+       → nada de spam. El spam detectado en origen nunca genera push.  */
   afterSend(key, m) {
     const preview = m.t === 'img' ? 'Imagen' : m.t === 'voice' ? 'Mensaje de voz' : m.t === 'stk' ? 'Sticker' : truncate(m.text, 60);
     const res = Spam.check('out:' + Auth.me.uid, m.t === 'msg' ? m.text : preview);
     if (res.isSpam && Settings.spam) return; /* spam: sin push */
 
     const k = this.kind(key);
-    if (k.type === 'dm') {
-      if (!Presence.isOnline(key)) {
-        Push.notify(key, `${Auth.me.name} te escribió`, preview, { chat: key });
+    const targets = k.type === 'dm' ? [key] : (k.group ? k.group.members.filter((u) => u !== Auth.me.uid) : []);
+    const pending = new Set();
+    targets.forEach((u) => {
+      if (!Presence.isOnline(u)) {
+        /* offline: notificar ya (no va a acusar recibo) */
+        this._doPush(u, key, preview);
+      } else {
+        /* online: esperar su ack 8 s */
+        pending.add(u);
       }
-    } else if (k.group) {
-      k.group.members.forEach((u) => {
-        if (u === Auth.me.uid) return;
-        if (!Presence.isOnline(u)) {
-          Push.notify(u, `${Auth.me.name} · ${k.group.name}`, preview, { chat: key });
-        }
-      });
+    });
+    if (pending.size) {
+      const entry = {
+        targets: pending, key, preview,
+        timer: setTimeout(() => this._flushPush(m.id), 8000)
+      };
+      this._pushPending.set(m.id, entry);
+    }
+  },
+
+  _doPush(uid, key, preview) {
+    const k = this.kind(key);
+    const title = k.type === 'dm'
+      ? `${Auth.me.name} te escribió`
+      : `${Auth.me.name} · ${(k.group && k.group.name) || 'grupo'}`;
+    Push.notify(uid, title, preview, { chat: key });
+  },
+
+  /* venció la espera de acks → push a quien no confirmó */
+  _flushPush(id) {
+    const e = this._pushPending.get(id);
+    if (!e) return;
+    this._pushPending.delete(id);
+    e.targets.forEach((u) => this._doPush(u, e.key, e.preview));
+  },
+
+  /* llega el ack de un DM (1:1): el destinatario lo recibió vivo */
+  ackFrom(uid, id) {
+    const e = this._pushPending.get(id);
+    if (e) {
+      e.targets.delete(uid);
+      if (!e.targets.size) {
+        clearTimeout(e.timer);
+        this._pushPending.delete(id);
+      }
     }
   },
 
@@ -336,6 +378,8 @@ const Chat = {
       this.addHist(key, msg);
       this.renderIncoming(key, msg);
       Notify.onIncomingMessage(key, msg, res, from);
+      /* ack al autor para su push diferido (y estadística futura) */
+      Mqtt.publish(T.evt(from), { t: 'gack', gid, id, from: Auth.me.uid });
       this.clearTopic(T.gm(gid, from, id));
     }
     else if (m.t === 'imgc' || m.t === 'voic' || m.t === 'stkc') {
@@ -387,6 +431,9 @@ const Chat = {
           this.addHist(key, msg);
           this.renderIncoming(key, msg);
           Notify.onIncomingMessage(key, msg, res, from);
+          /* ack al autor (DM) o gack (grupo): cancela su push diferido */
+          if (k.type === 'group') Mqtt.publish(T.evt(from), { t: 'gack', gid: k.gid, id, from: Auth.me.uid });
+          else Mqtt.publish(T.evt(from), { t: 'ack', id, from: Auth.me.uid });
           for (let c = 0; c < n; c++) this.clearTopic(this.chunkTopicOf(key, from, id, c));
         } catch (e) { console.warn('assemble', e); }
       })();
@@ -401,8 +448,10 @@ const Chat = {
 
   clearTopic(topic) { Mqtt.publish(topic, '', { retain: true }); },
 
-  markAcked(id) {
+  markAcked(id, fromUid) {
     if (!id) return;
+    /* cancela el push diferido de ese destinatario */
+    if (fromUid) this.ackFrom(fromUid, id);
     for (const f of Object.keys(this._cache)) {
       const m = this._cache[f].find((x) => x.id === id && x.mine);
       if (m) {
@@ -581,12 +630,13 @@ function bubbleHTML(m, prev, chatKey) {
   const spamAttr = m.spam ? ` title="Motivos: ${esc((m.spamReasons || []).join(' · ') || 'patrón de spam')}"` : '';
   const isGroup = typeof chatKey === 'string' && chatKey.startsWith('g:');
 
-  /* en grupos: avatar + nombre de QUIEN ENVÍA en cada mensaje ajeno */
+  /* en grupos: avatar + nombre de QUIEN ENVÍA en cada mensaje ajeno
+     (clicables → ver perfil) */
   const showAvatar = isGroup && !mine && (!prev || prev.from !== m.from || prev.mine);
   const sender = isGroup && !mine
-    ? `<span class="g-sender" style="--sh:${hueOf(m.from || '')}">${esc(m.name || m.from || '')}</span>` : '';
+    ? `<span class="g-sender" style="--sh:${hueOf(m.from || '')}" data-puid="${esc(m.from || '')}" role="button" tabindex="0" title="Ver perfil">${esc(m.name || m.from || '')}</span>` : '';
   const avatar = showAvatar
-    ? `<div class="avatar msg-av" style="--h:${hueOf(m.from || '')}" title="${esc(m.name || m.from || '')}">${Avatars.html(m.from, m.name || m.from)}</div>` : '';
+    ? `<div class="avatar msg-av" style="--h:${hueOf(m.from || '')}" data-puid="${esc(m.from || '')}" title="Ver perfil de ${esc(m.name || m.from || '')}">${Avatars.html(m.from, m.name || m.from)}</div>` : '';
   const inner = `${avatar}<div class="msg-col">${sender}`;
 
   const tick = mine && !isGroup ? `<span class="tick ${m.acked ? 'ok' : ''}">${m.acked ? '✓✓' : '✓'}</span>` : (mine ? '<span class="tick">✓</span>' : '');

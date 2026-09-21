@@ -124,17 +124,24 @@ const Friends = {
     UI.toast(`${name} eliminó la amistad contigo.`);
   },
 
-  /* ---- actualización del perfil de un amigo (nombre y/o foto) ----
+  /* ---- actualización del perfil de un amigo (nombre, foto y/o bio) ----
      El perfil retenido nexo/v1/profile/<uid> llega por la suscripción
-     de presencia: cambió la foto → refrescar todas las vistas.        */
+     de presencia: cambió la foto o la bio → refrescar todas las vistas.  */
   onProfile(uid, m) {
     if (!m || !m.uid || uid === (Auth.me && Auth.me.uid)) return;
     if (!this.isFriend(uid)) return;
-    const f = this.friend(uid);
+    /* mutar y guardar EL MISMO array (all() re-parsea localStorage:
+     guardar un parse distinto perdería los cambios silenciosamente) */
+    const list = this.all();
+    const f = list.find((x) => x.uid === uid);
+    if (!f) return;
     let changed = false;
     if (m.name && m.name !== f.name) {
       f.name = m.name;
-      this.save(this.all());
+      changed = true;
+    }
+    if (typeof m.bio === 'string' && m.bio !== (f.bio || '')) {
+      f.bio = m.bio;
       changed = true;
     }
     if (m.av) {
@@ -145,6 +152,7 @@ const Friends = {
       changed = true;
     }
     if (changed) {
+      this.save(list);
       App.renderAll();
       if (Chat.active === uid) Chat.renderHeaderInfo(uid);
     }

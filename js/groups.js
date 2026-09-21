@@ -204,14 +204,14 @@ const Groups = {
     root.innerHTML = `
       <div class="modal group-modal">
         <h3>${esc(g.name)}</h3>
-        <p>${members.length} miembro${members.length !== 1 ? 's' : ''} · creado por @${esc(g.creator)}</p>
+        <p>${members.length} miembro${members.length !== 1 ? 's' : ''} · creado por @${esc(g.creator)} · toca uno para ver su perfil</p>
         <div class="grp-list">
           ${members.map((m) => `
-            <div class="grp-member">
+            <button class="grp-member" data-muid="${esc(m.uid)}" title="Ver perfil">
               <span class="avatar">${Avatars.html(m.uid, m.name)}</span>
               <span class="g-info"><strong>${esc(m.name)}${m.me ? ' (tú)' : ''}</strong><span>@${esc(m.uid)}</span></span>
               ${m.me ? '' : `<span class="pres-dot ${Presence.isOnline(m.uid) ? 'on' : ''}"></span>`}
-            </div>`).join('')}
+            </button>`).join('')}
         </div>
         <div class="m-acts">
           <button class="btn-ghost" data-r="0">Cerrar</button>
@@ -220,6 +220,11 @@ const Groups = {
       </div>`;
     root.hidden = false;
     root.onclick = (e) => {
+      const mem = e.target.closest('.grp-member');
+      if (mem && mem.dataset.muid) {
+        ProfileCard.open(mem.dataset.muid);
+        return;
+      }
       const b = e.target.closest('[data-r]');
       if (!b) return;
       if (b.dataset.r === 'leave') {
