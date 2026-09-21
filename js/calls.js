@@ -35,6 +35,10 @@ const Calls = {
     const t = e && e.type;
     if (t === 'peer-unavailable') {
       UI.toast('El usuario no está disponible para llamadas.');
+      if (this.meta && this.meta.from && !Presence.isOnline(this.meta.from)) {
+        /* aviso push de llamada perdida aunque tenga la app cerrada */
+        Push.notify(this.meta.from, 'Llamada perdida', `${Auth.me.name} intentó llamarte`, { chat: this.meta.from });
+      }
       this.teardown();
     } else if (t === 'unavailable-id') {
       console.warn('[peer] id en uso (otra ventana)');
@@ -84,6 +88,9 @@ const Calls = {
       if (this.state === 'out' || this.state === 'connecting') {
         UI.toast(`${name} no responde`);
         Notify.onMissedCall({ from: fuid, name });
+        if (!Presence.isOnline(fuid)) {
+          Push.notify(fuid, 'Llamada perdida', `${Auth.me.name} intentó llamarte`, { chat: fuid });
+        }
         this.hangup();
       }
     }, 45000);
@@ -235,8 +242,9 @@ const Calls = {
     ov.classList.toggle('video-active', st === 'active' && hasVideo);
 
     const av = $('#callAvatar');
-    av.textContent = initials(name || '?');
-    avatarStyle(av, (this.meta && this.meta.from) || name || 'n');
+    const avUid = (this.meta && this.meta.from) || name || 'n';
+    av.innerHTML = Avatars.html(avUid, name || '?');
+    avatarStyle(av, avUid);
     $('#callName').textContent = name || '';
     const txt = { out: 'Llamando…', in: 'Llamada entrante', connecting: 'Conectando…', active: 'En llamada' }[st] || '';
     $('#callState').textContent = this._video && st !== 'active' ? `${txt} · video` : txt;

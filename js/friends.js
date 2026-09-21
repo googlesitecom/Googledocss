@@ -38,6 +38,10 @@ const Friends = {
     this.saveOut(out);
     App.renderFriends();
     UI.toast(`Solicitud enviada a ${prof.name || u}. Debe aceptarla para chatear.`);
+    /* push si está desconectado: se entera sin abrir la app */
+    if (!Presence.isOnline(u)) {
+      Push.notify(u, 'Nueva solicitud de amistad', `${Auth.me.name} quiere ser tu amigo`, { friends: true });
+    }
   },
 
   /* ---- recepción de solicitud (en vivo o retenida al conectar) ---- */
@@ -64,6 +68,10 @@ const Friends = {
     App.renderAll();
     UI.toast(`¡Ya son amigos tú y ${p.name}!`);
     Sound.chime();
+    /* push al solicitante si está desconectado */
+    if (!Presence.isOnline(from)) {
+      Push.notify(from, 'Solicitud aceptada', `${Auth.me.name} aceptó tu solicitud de amistad`, { friends: true });
+    }
   },
 
   reject(from) {
@@ -114,5 +122,31 @@ const Friends = {
     if (Chat.active === from) Chat.close();
     App.renderAll();
     UI.toast(`${name} eliminó la amistad contigo.`);
+  },
+
+  /* ---- actualización del perfil de un amigo (nombre y/o foto) ----
+     El perfil retenido nexo/v1/profile/<uid> llega por la suscripción
+     de presencia: cambió la foto → refrescar todas las vistas.        */
+  onProfile(uid, m) {
+    if (!m || !m.uid || uid === (Auth.me && Auth.me.uid)) return;
+    if (!this.isFriend(uid)) return;
+    const f = this.friend(uid);
+    let changed = false;
+    if (m.name && m.name !== f.name) {
+      f.name = m.name;
+      this.save(this.all());
+      changed = true;
+    }
+    if (m.av) {
+      Avatars.set(uid, m.av);
+      changed = true;
+    } else if (m.av === '' && Avatars.get(uid)) {
+      Avatars.remove(uid);
+      changed = true;
+    }
+    if (changed) {
+      App.renderAll();
+      if (Chat.active === uid) Chat.renderHeaderInfo(uid);
+    }
   }
 };

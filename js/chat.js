@@ -1,8 +1,11 @@
-/* chat.js — mensajería real
+/* chat.js — mensajería real (DM + grupos)
    - Texto: tema único por mensaje, retenido + expiración 7 días (bandeja offline)
-   - Imágenes: compresión en canvas + transferencia por chunks + IndexedDB
-   - Acuses de recibo (✓✓), indicador de escritura, historial local (400/conversación)
-   - Entrega == suscripción dm/<yo>/# : en vivo o retenida al reconectar          */
+   - Imágenes y MENSAJES DE VOZ: compresión + transferencia por chunks + IndexedDB
+   - Grupos: mismos mecanismos sobre nexo/v1/gm/<gid>/<autor>/<id>
+   - Acuses de recibo (✓✓) en DM, indicador de escritura, historial local
+   - PUSH: si el destinatario está desconectado, su navegador recibe una
+     notificación Web Push aunque la app esté cerrada (ver push.js);
+     el spam detectado en origen NO genera push.                          */
 'use strict';
 
 const CHUNK = 48000; /* caracteres base64 por publicacion */
@@ -12,6 +15,14 @@ function b64ToBlob(b64, type = 'image/jpeg') {
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return new Blob([arr], { type });
+}
+function blobToB64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
 }
 
 async function compressImage(file, maxDim = 1280, q = 0.78) {
@@ -27,21 +38,36 @@ async function compressImage(file, maxDim = 1280, q = 0.78) {
 }
 
 const Chat = {
-  active: null,
-  _cache: {},        /* friendUid -> [mensajes] */
-  _chunkBuf: {},     /* msgId -> {from, n, meta, chunks} */
+  active: null,      /* uid amigo | 'g:<gid>' grupo */
+  _cache: {},        /* chatKey -> [mensajes] */
+  _chunkBuf: {},     /* msgId -> {key, from, n, meta, chunks} */
   _typingTimers: {},
   _lastTypingSent: 0,
   _objUrls: {},
+  _voice: {},        /* msgId -> {audio, btn, wave, durEl} */
+
+  /* ================= tipo de chat ================= */
+  kind(key) {
+    if (typeof key === 'string' && key.startsWith('g:')) {
+      return { type: 'group', gid: key.slice(2), group: Groups.get(key.slice(2)) };
+    }
+    return { type: 'dm', uid: key };
+  },
 
   /* ================= historial ================= */
   hist(f) {
-    if (!this._cache[f]) this._cache[f] = LS.get(K.hist(Auth.me.uid, f), []);
+    if (!this._cache[f]) {
+      this._cache[f] = LS.get(K.hist(Auth.me.uid, f), []);
+      /* cronología garantizada también con historiales antiguos */
+      if (this._cache[f].length > 1) this._cache[f].sort((a, b) => a.ts - b.ts);
+    }
     return this._cache[f];
   },
   addHist(f, m) {
     const h = this.hist(f);
     h.push(m);
+    /* orden cronológico (la entrega retenida puede llegar desordenada) */
+    if (h.length > 1 && h[h.length - 2].ts > m.ts) h.sort((a, b) => a.ts - b.ts);
     if (h.length > 400) h.splice(0, h.length - 400);
     LS.set(K.hist(Auth.me.uid, f), h);
   },
@@ -49,8 +75,13 @@ const Chat = {
   lastMsg(f) { const h = this.hist(f); return h.length ? h[h.length - 1] : null; },
   lastActivity(f) {
     const m = this.lastMsg(f);
+    if (m && m.ts) return m.ts;
+    if (String(f).startsWith('g:')) {
+      const g = Groups.get(f.slice(2));
+      return (g && g.created) || 0;
+    }
     const fr = Friends.friend(f);
-    return (m && m.ts) || (fr && fr.since) || 0;
+    return (fr && fr.since) || 0;
   },
 
   /* ================= no leídos ================= */
@@ -71,21 +102,15 @@ const Chat = {
   },
 
   /* ================= abrir / cerrar ================= */
-  open(uid) {
-    this.active = uid;
+  open(key) {
+    this.active = key;
     App.setChatOpen(true);
     $('#chatView').hidden = false;
     $('#emptyState').hidden = true;
-    const fr = Friends.friend(uid);
-    const name = fr ? fr.name : uid;
-    const av = $('#chatAvatar');
-    av.textContent = initials(name);
-    avatarStyle(av, uid);
-    $('#chatName').textContent = name;
-    this.renderPresence();
-    this.renderMessages(uid);
-    this.clearUnread(uid);
-    Spam.reset(uid);
+    this.renderHeaderInfo(key);
+    this.renderMessages(key);
+    this.clearUnread(key);
+    if (this.kind(key).type === 'dm') Spam.reset(key);
     const inp = $('#msgInput');
     if (inp && window.innerWidth > 920) inp.focus();
   },
@@ -95,68 +120,153 @@ const Chat = {
     $('#emptyState').hidden = false;
     App.setChatOpen(false);
   },
+
+  /* cabecera del chat según DM o grupo */
+  renderHeaderInfo(key) {
+    const k = this.kind(key);
+    const av = $('#chatAvatar');
+    $('#chatView').dataset.chatType = k.type;
+    if (k.type === 'group') {
+      av.innerHTML = `<span class="g-mark"><svg class="icon"><use href="#i-users"/></svg></span>`;
+      avatarStyle(av, k.gid);
+      $('#chatName').textContent = (k.group && k.group.name) || 'Grupo';
+      const n = k.group ? k.group.members.length : 0;
+      const online = Groups.onlineCount(k.gid);
+      const el = $('#chatPresence');
+      el.textContent = `grupo · ${n} miembro${n !== 1 ? 's' : ''}${online ? ` · ${online} en línea` : ''}`;
+      el.classList.remove('on');
+      el.classList.add('grp');
+    } else {
+      av.innerHTML = Avatars.html(key, Friends.name(key));
+      avatarStyle(av, key);
+      $('#chatName').textContent = Friends.name(key);
+      const el = $('#chatPresence');
+      el.classList.remove('grp');
+      const on = Presence.isOnline(key);
+      el.textContent = on ? 'en línea' : Presence.lastSeenTxt ? Presence.lastSeenTxt(key) : 'desconectado';
+      el.classList.toggle('on', on);
+    }
+  },
   renderPresence() {
-    const el = $('#chatPresence');
-    if (!el || !this.active) return;
-    const on = Presence.isOnline(this.active);
-    el.textContent = on ? 'en línea' : 'desconectado';
-    el.classList.toggle('on', on);
+    if (this.active) this.renderHeaderInfo(this.active);
   },
 
-  /* ================= envío ================= */
+  /* ================= envío (DM y grupo) ================= */
+  msgTopic(key, id) {
+    const k = this.kind(key);
+    return k.type === 'group' ? T.gm(k.gid, Auth.me.uid, id) : T.dm(key, Auth.me.uid, id);
+  },
+  chunkTopic(key, id, i) {
+    const k = this.kind(key);
+    return k.type === 'group' ? T.gmc(k.gid, Auth.me.uid, id, i) : T.dmc(key, Auth.me.uid, id, i);
+  },
+  typingTopic(key) {
+    const k = this.kind(key);
+    return k.type === 'group' ? T.gsys(k.gid, Auth.me.uid) : T.evt(key);
+  },
+
   sendText() {
     const inp = $('#msgInput');
     const text = (inp.value || '').replace(/\s+$/, '');
     if (!text.trim() || !this.active) return;
-    const f = this.active;
+    const key = this.active;
     const id = rid();
     const ts = Date.now();
 
     const ok = Mqtt.publish(
-      T.dm(f, Auth.me.uid, id),
+      this.msgTopic(key, id),
       { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts },
       { retain: true, expiry: 604800 }
     );
     if (!ok) { UI.toast('Sin conexión: el mensaje no se envió.'); return; }
 
-    this.addHist(f, { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts, mine: true });
-    this.appendBubble(f, { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts, mine: true });
+    const m = { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts, mine: true };
+    this.addHist(key, m);
+    this.appendBubble(key, m);
     inp.value = '';
     inp.style.height = 'auto';
     App.renderConvoList();
+    this.afterSend(key, m);
   },
 
+  /* push a desconectados + anti-spam en origen */
+  afterSend(key, m) {
+    const preview = m.t === 'img' ? 'Imagen' : m.t === 'voice' ? 'Mensaje de voz' : truncate(m.text, 60);
+    const res = Spam.check('out:' + Auth.me.uid, m.t === 'msg' ? m.text : preview);
+    if (res.isSpam && Settings.spam) return; /* spam: sin push */
+
+    const k = this.kind(key);
+    if (k.type === 'dm') {
+      if (!Presence.isOnline(key)) {
+        Push.notify(key, `${Auth.me.name} te escribió`, preview, { chat: key });
+      }
+    } else if (k.group) {
+      k.group.members.forEach((u) => {
+        if (u === Auth.me.uid) return;
+        if (!Presence.isOnline(u)) {
+          Push.notify(u, `${Auth.me.name} · ${k.group.name}`, preview, { chat: key });
+        }
+      });
+    }
+  },
+
+  /* ---------- imágenes ---------- */
   async sendImage(file) {
     if (!file || !this.active) return;
     if (!file.type.startsWith('image/')) { UI.toast('Solo se pueden enviar imágenes.'); return; }
     if (file.size > 8 * 1024 * 1024) { UI.toast('La imagen supera 8 MB.'); return; }
-    const f = this.active;
+    const key = this.active;
     try {
       const { b64, w, h } = await compressImage(file);
-      const id = rid();
-      const ts = Date.now();
-      const n = Math.ceil(b64.length / CHUNK);
-
-      for (let i = 0; i < n; i++) {
-        const chunk = {
-          t: 'imgc', id, i, n, from: Auth.me.uid, name: Auth.me.name, ts, w, h,
-          data: b64.substr(i * CHUNK, CHUNK)
-        };
-        Mqtt.publish(T.dmc(f, Auth.me.uid, id, i), chunk, { retain: true, expiry: 604800 });
-        if (i % 3 === 2) await sleep(30); /* no saturar el broker */
-      }
-
-      const blob = b64ToBlob(b64);
-      await IDB.put(id, blob);
-
-      const m = { t: 'img', id, from: Auth.me.uid, name: Auth.me.name, ts, mine: true, w, h };
-      this.addHist(f, m);
-      this.appendBubble(f, m);
+      const m = await this.sendChunked(key, { b64, msgT: 'img', meta: { w, h } });
       App.renderConvoList();
+      this.afterSend(key, m);
     } catch (e) {
       console.warn('sendImage', e);
       UI.toast('No se pudo procesar la imagen.');
     }
+  },
+
+  /* ---------- mensajes de voz ---------- */
+  async sendVoice(blob, durSec) {
+    if (!blob || !this.active) return;
+    if (blob.size > 1.6 * 1024 * 1024) { UI.toast('El mensaje de voz es demasiado largo.'); return; }
+    const key = this.active;
+    try {
+      const b64 = await blobToB64(blob);
+      const m = await this.sendChunked(key, {
+        b64, msgT: 'voice',
+        meta: { dur: durSec, mime: blob.type || 'audio/webm' },
+        blobType: blob.type || 'audio/webm'
+      });
+      App.renderConvoList();
+      this.afterSend(key, m);
+    } catch (e) {
+      console.warn('sendVoice', e);
+      UI.toast('No se pudo enviar el mensaje de voz.');
+    }
+  },
+
+  /* ---------- envío por chunks común (imagen / voz) ---------- */
+  async sendChunked(key, { b64, msgT, meta = {}, blobType = 'image/jpeg' }) {
+    const id = rid();
+    const ts = Date.now();
+    const n = Math.ceil(b64.length / CHUNK);
+    for (let i = 0; i < n; i++) {
+      const chunk = {
+        t: msgT === 'img' ? 'imgc' : 'voic', id, i, n,
+        from: Auth.me.uid, name: Auth.me.name, ts,
+        ...meta,
+        data: b64.substr(i * CHUNK, CHUNK)
+      };
+      Mqtt.publish(this.chunkTopic(key, id, i), chunk, { retain: true, expiry: 604800 });
+      if (i % 3 === 2) await sleep(30);
+    }
+    await IDB.put(id, new Blob([b64ToBlob(b64, blobType)], { type: blobType }));
+    const m = { t: msgT, id, from: Auth.me.uid, name: Auth.me.name, ts, mine: true, ...meta };
+    this.addHist(key, m);
+    this.appendBubble(key, m);
+    return m;
   },
 
   typingThrottle() {
@@ -164,19 +274,23 @@ const Chat = {
     const now = Date.now();
     if (now - this._lastTypingSent < 2200) return;
     this._lastTypingSent = now;
-    Mqtt.publish(T.evt(this.active), { t: 'typing', from: Auth.me.uid, name: Auth.me.name });
+    const k = this.kind(this.active);
+    if (k.type === 'group') {
+      Mqtt.publish(this.typingTopic(this.active), { t: 'gtyping', from: Auth.me.uid, name: Auth.me.name });
+    } else {
+      Mqtt.publish(T.evt(this.active), { t: 'typing', from: Auth.me.uid, name: Auth.me.name });
+    }
   },
 
-  /* ================= recepción ================= */
+  /* ================= recepción DM ================= */
   handleIncoming(from, rest, m) {
     if (!m || !m.t || from === Auth.me.uid) return;
-
     if (m.t === 'msg') {
       if (rest.length !== 1) return;
       const id = rest[0] || m.id;
       if (this.hasMsg(from, id)) { this.clearTopic(T.dm(Auth.me.uid, from, id)); return; }
 
-      const res = Spam.check(from, m.text);
+      const res = Spam.check(from, m.text, m.ts || Date.now());
       const msg = {
         t: 'msg', id, from, name: m.name || from, text: String(m.text || ''), ts: m.ts || Date.now(),
         mine: false, spam: res.isSpam, spamReasons: res.reasons, spamScore: res.score
@@ -189,20 +303,51 @@ const Chat = {
     }
     else if (m.t === 'imgc') {
       if (rest.length !== 2) return;
-      this.onImageChunk(from, rest[0], parseInt(rest[1], 10) || 0, m);
+      this.onChunk(from, from, rest[0], parseInt(rest[1], 10) || 0, m, 'img');
+    }
+    else if (m.t === 'voic') {
+      if (rest.length !== 2) return;
+      this.onChunk(from, from, rest[0], parseInt(rest[1], 10) || 0, m, 'voice');
     }
   },
 
-  onImageChunk(from, id, i, m) {
+  /* ================= recepción GRUPO ================= */
+  handleGroupIncoming(gid, from, rest, m) {
+    if (!m || !m.t || from === Auth.me.uid) return;
+    const key = 'g:' + gid;
+    if (m.t === 'gtyping') { this.showTyping(key, m.name || from); return; }
+    if (m.t === 'msg') {
+      if (rest.length !== 1) return;
+      const id = rest[0] || m.id;
+      if (this.hasMsg(key, id)) { this.clearTopic(T.gm(gid, from, id)); return; }
+
+      const res = Spam.check(from, m.text, m.ts || Date.now());
+      const msg = {
+        t: 'msg', id, from, name: m.name || from, gname: Groups.name(gid), text: String(m.text || ''),
+        ts: m.ts || Date.now(), mine: false, spam: res.isSpam, spamReasons: res.reasons, spamScore: res.score
+      };
+      this.addHist(key, msg);
+      this.renderIncoming(key, msg);
+      Notify.onIncomingMessage(key, msg, res, from);
+      this.clearTopic(T.gm(gid, from, id));
+    }
+    else if (m.t === 'imgc' || m.t === 'voic') {
+      if (rest.length !== 2) return;
+      this.onChunk(key, from, rest[0], parseInt(rest[1], 10) || 0, m, m.t === 'imgc' ? 'img' : 'voice');
+    }
+  },
+
+  /* ---------- chunks comunes (key = chat, from = autor) ---------- */
+  onChunk(key, from, id, i, m, kindT) {
     let buf = this._chunkBuf[id];
     if (!buf) {
-      if (this.hasMsg(from, id)) { /* ya procesada: ir limpiando chunks sueltos */
-        this.clearTopic(T.dmc(Auth.me.uid, from, id, i));
-        return;
-      }
+      if (this.hasMsg(key, id)) { this.clearTopic(this.chunkTopicOf(key, from, id, i)); return; }
       buf = this._chunkBuf[id] = {
-        from, n: m.n || 0,
-        meta: { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h },
+        key, from, n: m.n || 0,
+        meta: kindT === 'voice'
+          ? { name: m.name || from, ts: m.ts || Date.now(), dur: m.dur || 0, mime: m.mime || 'audio/webm' }
+          : { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h },
+        kindT,
         chunks: {}
       };
     }
@@ -210,28 +355,37 @@ const Chat = {
     buf.chunks[i] = m.data || '';
 
     if (buf.n > 0 && Object.keys(buf.chunks).length >= buf.n) {
-      const n = buf.n;
-      const meta = buf.meta;
+      const { n, meta, kindT: type } = buf;
       const b64 = Array.from({ length: n }, (_, k) => buf.chunks[k] || '').join('');
       delete this._chunkBuf[id];
 
       (async () => {
         try {
-          const blob = b64ToBlob(b64);
+          const blobType = type === 'voice' ? (meta.mime || 'audio/webm') : 'image/jpeg';
+          const blob = b64ToBlob(b64, blobType);
           await IDB.put(id, blob);
-          const res = Spam.check(from, '[imagen]');
+          const res = Spam.check(from, type === 'img' ? '[imagen]' : '[mensaje de voz]', meta.ts || Date.now());
           const msg = {
-            t: 'img', id, from, name: meta.name, ts: meta.ts, w: meta.w, h: meta.h,
-            mine: false, spam: res.isSpam, spamReasons: res.reasons, spamScore: res.score
+            t: type, id, from, name: meta.name, ts: meta.ts, mine: false,
+            spam: res.isSpam, spamReasons: res.reasons, spamScore: res.score
           };
-          this.addHist(from, msg);
-          this.renderIncoming(from, msg);
-          Notify.onIncomingMessage(from, msg, res);
-          Mqtt.publish(T.evt(from), { t: 'ack', id, from: Auth.me.uid });
-          for (let k = 0; k < n; k++) this.clearTopic(T.dmc(Auth.me.uid, from, id, k));
-        } catch (e) { console.warn('img assemble', e); }
+          if (type === 'img') { msg.w = meta.w; msg.h = meta.h; }
+          else { msg.dur = meta.dur; msg.mime = meta.mime; }
+          const k = this.kind(key);
+          if (k.type === 'group') msg.gname = Groups.name(k.gid);
+          this.addHist(key, msg);
+          this.renderIncoming(key, msg);
+          Notify.onIncomingMessage(key, msg, res, from);
+          for (let c = 0; c < n; c++) this.clearTopic(this.chunkTopicOf(key, from, id, c));
+        } catch (e) { console.warn('assemble', e); }
       })();
     }
+  },
+
+  chunkTopicOf(key, from, id, i) {
+    const k = this.kind(key);
+    /* los chunks llegan al destinatario: dm/<YO>/<autor>/... */
+    return k.type === 'group' ? T.gmc(k.gid, from, id, i) : T.dmc(Auth.me.uid, from, id, i);
   },
 
   clearTopic(topic) { Mqtt.publish(topic, '', { retain: true }); },
@@ -250,19 +404,19 @@ const Chat = {
     }
   },
 
-  showTyping(from, name) {
-    if (this.active !== from) return;
+  showTyping(key, name) {
+    if (this.active !== key) return;
     $('#typingRow').hidden = false;
-    $('#typingName').textContent = name || from;
-    clearTimeout(this._typingTimers[from]);
-    this._typingTimers[from] = setTimeout(() => { $('#typingRow').hidden = true; }, 3200);
+    $('#typingName').textContent = name || '';
+    clearTimeout(this._typingTimers[key]);
+    this._typingTimers[key] = setTimeout(() => { $('#typingRow').hidden = true; }, 3200);
   },
 
   /* ================= render ================= */
-  renderIncoming(from, msg) {
-    if (this.active === from) {
-      this.appendBubble(from, msg);
-      if (!document.hidden) this.clearUnread(from);
+  renderIncoming(key, msg) {
+    if (this.active === key) {
+      this.appendBubble(key, msg);
+      if (!document.hidden) this.clearUnread(key);
     }
     App.renderConvoList();
   },
@@ -275,11 +429,12 @@ const Chat = {
     const frag = [];
     h.forEach((m) => {
       if (!prev || !sameDay(prev.ts, m.ts)) frag.push(`<div class="date-sep">${fmtDayLong(m.ts)}</div>`);
-      frag.push(bubbleHTML(m, prev));
+      frag.push(bubbleHTML(m, prev, f));
       prev = m;
     });
     box.innerHTML = frag.join('');
-    this.hydrateImages(box);
+    this.hydrateMedia(box);
+    this.applyWallpaper();
     box.scrollTop = box.scrollHeight;
   },
 
@@ -291,13 +446,14 @@ const Chat = {
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
     let html = '';
     if (!prev || !sameDay(prev.ts, m.ts)) html += `<div class="date-sep">${fmtDayLong(m.ts)}</div>`;
-    html += bubbleHTML(m, prev);
+    html += bubbleHTML(m, prev, f);
     box.insertAdjacentHTML('beforeend', html);
-    this.hydrateImages(box);
+    this.hydrateMedia(box);
     if (nearBottom || m.mine) box.scrollTop = box.scrollHeight;
   },
 
-  hydrateImages(scope) {
+  hydrateMedia(scope) {
+    /* imágenes */
     $$('.msg-img[data-img]', scope).forEach((el) => {
       const id = el.dataset.img;
       if (this._objUrls[id]) { el.src = this._objUrls[id]; return; }
@@ -314,31 +470,142 @@ const Chat = {
         el.src = u;
       }).catch(() => {});
     });
+    /* ondas de voz */
+    $$('.v-wave[data-vid]', scope).forEach((el) => this.hydrateWave(el));
+  },
+
+  async hydrateWave(el) {
+    const id = el.dataset.vid;
+    if (el.dataset.done) return;
+    /* buscar picos ya calculados en el historial */
+    let peaks = null;
+    for (const f of Object.keys(this._cache)) {
+      const m = this._cache[f].find((x) => x.id === id);
+      if (m) {
+        if (m.peaks) peaks = m.peaks;
+        else {
+          const blob = await IDB.get(id);
+          if (blob) {
+            peaks = await Voice.peaks(blob);
+            m.peaks = peaks;
+            LS.set(K.hist(Auth.me.uid, f), this._cache[f]);
+          }
+        }
+        break;
+      }
+    }
+    if (!peaks) peaks = Array.from({ length: 26 }, () => 0.4);
+    el.dataset.done = '1';
+    [...el.children].forEach((bar, i) => {
+      bar.style.height = (7 + (peaks[i] || 0.3) * 24).toFixed(1) + 'px';
+    });
+  },
+
+  applyWallpaper() { if (window.Theme && Theme.applyWallpaper) Theme.applyWallpaper(); },
+
+  /* ================= reproductor de voz ================= */
+  async toggleVoice(id, btn) {
+    let p = this._voice[id];
+    if (!p) {
+      const blob = await IDB.get(id);
+      if (!blob) { UI.toast('Audio no disponible en este dispositivo.'); return; }
+      const audio = new Audio(URL.createObjectURL(blob));
+      p = this._voice[id] = { audio, btn };
+      audio.addEventListener('timeupdate', () => this._voiceTick(id));
+      audio.addEventListener('ended', () => {
+        const b = p.btn;
+        if (b) b.innerHTML = '<svg class="icon"><use href="#i-play"/></svg>';
+        this._voiceTick(id, true);
+      });
+    }
+    /* pausar los demás */
+    Object.entries(this._voice).forEach(([oid, o]) => {
+      if (oid !== id && o.audio && !o.audio.paused) {
+        o.audio.pause();
+        const b = o.btn || document.querySelector(`.v-play[data-vid="${CSS.escape(oid)}"]`);
+        if (b) b.innerHTML = '<svg class="icon"><use href="#i-play"/></svg>';
+      }
+    });
+    if (p.audio.paused) {
+      p.btn = btn;
+      p.audio.play().catch(() => UI.toast('No se pudo reproducir el audio.'));
+      btn.innerHTML = '<svg class="icon"><use href="#i-pause"/></svg>';
+    } else {
+      p.audio.pause();
+      btn.innerHTML = '<svg class="icon"><use href="#i-play"/></svg>';
+    }
+  },
+
+  _voiceTick(id, reset) {
+    const p = this._voice[id];
+    if (!p) return;
+    const dur = isFinite(p.audio.duration) && p.audio.duration > 0 ? p.audio.duration : null;
+    const cur = reset ? 0 : p.audio.currentTime;
+    const el = document.querySelector(`.v-dur[data-vid="${CSS.escape(id)}"]`);
+    if (el) el.textContent = Voice.fmtDur((dur || 0) - cur > 0 ? (dur - cur) : (dur || 0)) + (reset ? '' : '');
+    if (reset) el && (el.textContent = Voice.fmtDur(dur || 0));
+    const ratio = dur ? Math.min(1, cur / dur) : 0;
+    const wave = document.querySelector(`.v-wave[data-vid="${CSS.escape(id)}"]`);
+    if (wave) {
+      const bars = wave.children;
+      const played = Math.round(ratio * bars.length);
+      for (let i = 0; i < bars.length; i++) bars[i].classList.toggle('played', i < played);
+    }
+  },
+
+  cycleVoiceSpeed(id, btn) {
+    const p = this._voice[id];
+    if (!p) return;
+    const next = p.audio.playbackRate >= 2 ? 1 : p.audio.playbackRate >= 1.5 ? 2 : 1.5;
+    p.audio.playbackRate = next;
+    btn.textContent = next + 'x';
   }
 };
 
 /* ---- plantilla de burbuja ---- */
-function bubbleHTML(m, prev) {
+function bubbleHTML(m, prev, chatKey) {
   const mine = !!m.mine;
   const time = fmtTime(m.ts);
-  const grp = prev && prev.mine === mine && (m.ts - prev.ts) < 240000 ? 'grp' : '';
+  const grp = prev && prev.mine === mine && prev.from === m.from && (m.ts - prev.ts) < 240000 ? 'grp' : '';
   const spamAttr = m.spam ? ` title="Motivos: ${esc((m.spamReasons || []).join(' · ') || 'patrón de spam')}"` : '';
+  const isGroup = typeof chatKey === 'string' && chatKey.startsWith('g:');
+  /* nombre del autor en grupos cuando cambia el remitente */
+  const sender = isGroup && !mine && (!prev || prev.from !== m.from)
+    ? `<span class="g-sender">${esc(m.name || '')}</span>` : '';
+  const tick = mine && !isGroup ? `<span class="tick ${m.acked ? 'ok' : ''}">${m.acked ? '✓✓' : '✓'}</span>` : (mine ? '<span class="tick">✓</span>' : '');
+  const spamChip = m.spam ? `<div class="spam-chip"><svg class="icon"><use href="#i-shield"/></svg>Spam — notificación bloqueada</div>` : '';
 
   if (m.t === 'img') {
-    return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">
+    return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${sender}
       <div class="bubble img ${m.spam ? 'spam' : ''}"${spamAttr}>
         <img class="msg-img" data-img="${esc(m.id)}" alt="Imagen compartida">
-        ${m.spam ? `<div class="spam-chip"><svg class="icon"><use href="#i-shield"/></svg>Spam — notificación bloqueada</div>` : ''}
+        ${spamChip}
         <span class="msg-time">${time}</span>
       </div>
     </div>`;
   }
 
-  return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">
+  if (m.t === 'voice') {
+    return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${sender}
+      <div class="bubble voice ${m.spam ? 'spam' : ''}"${spamAttr}>
+        <div class="v-row">
+          <button class="v-play" data-vid="${esc(m.id)}" title="Reproducir"><svg class="icon"><use href="#i-play"/></svg></button>
+          <span class="v-wave" data-vid="${esc(m.id)}">${'<i></i>'.repeat(26)}</span>
+          <span class="v-dur" data-vid="${esc(m.id)}">${Voice.fmtDur(m.dur || 0)}</span>
+          <button class="v-speed" data-vid="${esc(m.id)}" title="Velocidad">1x</button>
+        </div>
+        ${spamChip}
+        ${tick}
+        <span class="msg-time">${time}</span>
+      </div>
+    </div>`;
+  }
+
+  return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">${sender}
     <div class="bubble ${m.spam ? 'spam' : ''}"${spamAttr}>
       <p class="msg-text">${linkify(esc(m.text))}</p>
-      ${m.spam ? `<div class="spam-chip"><svg class="icon"><use href="#i-shield"/></svg>Spam — notificación bloqueada</div>` : ''}
-      ${mine ? `<span class="tick ${m.acked ? 'ok' : ''}">${m.acked ? '✓✓' : '✓'}</span>` : ''}
+      ${spamChip}
+      ${tick}
       <span class="msg-time">${time}</span>
     </div>
   </div>`;

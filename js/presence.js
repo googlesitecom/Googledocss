@@ -1,7 +1,9 @@
 /* presence.js — presencia en línea real
    - Publica "online" retenido al conectar + heartbeat cada 25 s
    - LWT del broker publica "offline" si la conexión muere
-   - Un.online se considera vigente 70 s (por si un latido se pierde)  */
+   - Un.online se considera vigente 70 s (por si un latido se pierde)
+   - Al vigilar a un amigo también se suscribe su perfil retenido:
+     nombre y FOTO DE PERFIL siempre al día                              */
 'use strict';
 
 const Presence = {
@@ -26,11 +28,12 @@ const Presence = {
 
   watch(uid) {
     if (!uid || uid === (Auth.me && Auth.me.uid)) return;
-    Mqtt.sub(T.presence(uid));
+    Mqtt.sub([T.presence(uid), T.profile(uid)]);
   },
   unwatch(uid) {
     if (!uid) return;
     Mqtt.unsub(T.presence(uid));
+    Mqtt.unsub(T.profile(uid));
     delete this.map[uid];
   },
 
@@ -46,5 +49,12 @@ const Presence = {
     const p = this.map[uid];
     return !!p && p.online && (Date.now() - p.ts) < 70000;
   },
-  status(uid) { return this.isOnline(uid) ? 'en línea' : 'desconectado'; }
+  status(uid) { return this.isOnline(uid) ? 'en línea' : this.lastSeenTxt(uid); },
+  lastSeenTxt(uid) {
+    const p = this.map[uid];
+    if (p && !p.online && p.ts && Date.now() - p.ts < 30 * 864e5) {
+      return 'últ. vez ' + fmtDay(p.ts);
+    }
+    return 'desconectado';
+  }
 };

@@ -1,12 +1,14 @@
 /* auth.js — cuentas reales sin servidor
    - Registro: hash PBKDF2-SHA256 + sal aleatoria, publicado retenido en el broker
      (el directorio de cuentas vive en la red MQTT, no en una BD propia)
-   - Login: verifica el hash contra el registro retenido
-   - Sesión local (auto-login) con verificación y auto-reparación            */
+   - Login: verifica el hash contra el registro retenido y recupera el perfil
+     (nombre + FOTO DE PERFIL) publicado por el usuario
+   - Sesión local (auto-login) con verificación y auto-reparación
+   - Al conectar: presencia, bandejas, grupos y Service Worker de push        */
 'use strict';
 
 const Auth = {
-  me: null, /* {uid, name} */
+  me: null, /* {uid, name, av} */
 
   session() { return LS.get(K.session, null); },
 
@@ -56,11 +58,14 @@ const Auth = {
     if (hash !== rec.hash) throw new Error('Contraseña incorrecta.');
 
     const name = rec.name || u;
+    /* recuperar el perfil (nombre + foto) publicado por el usuario */
+    const prof = await Mqtt.fetchRetained(T.profile(u), 2200);
+    const av = (prof && prof.av) || null;
     /* auto-reparar el perfil retenido por si el broker lo perdió */
-    Mqtt.publish(T.profile(u), { uid: u, name, updated: Date.now() }, { retain: true });
+    Mqtt.publish(T.profile(u), { uid: u, name, av: av || undefined, updated: Date.now() }, { retain: true });
 
-    LS.set(K.session, { uid: u, name, salt: rec.salt, hash, iters: rec.iters || PBKDF2_ITERS });
-    this.me = { uid: u, name };
+    LS.set(K.session, { uid: u, name, av: av || undefined, salt: rec.salt, hash, iters: rec.iters || PBKDF2_ITERS });
+    this.me = { uid: u, name, av: av || undefined };
     return true;
   },
 
@@ -68,7 +73,7 @@ const Auth = {
   resume() {
     const s = this.session();
     if (s && s.uid && s.name) {
-      this.me = { uid: s.uid, name: s.name };
+      this.me = { uid: s.uid, name: s.name, av: s.av || undefined };
       return true;
     }
     return false;
@@ -83,21 +88,26 @@ const Auth = {
           const uid = this.me.uid;
           Mqtt._onReconnect = () => {
             Presence.goOnline();
-            Mqtt.publish(T.profile(uid), { uid, name: Auth.me.name, updated: Date.now() }, { retain: true });
+            Mqtt.publish(T.profile(uid), { uid, name: Auth.me.name, av: Auth.me.av || undefined, updated: Date.now() }, { retain: true });
+            if (Push.sub) Push.publishSub();
           };
           /* re-publicar identidad (auto-reparación del directorio) */
-          Mqtt.publish(T.profile(uid), { uid, name: this.me.name, updated: Date.now() }, { retain: true });
+          Mqtt.publish(T.profile(uid), { uid, name: this.me.name, av: this.me.av || undefined, updated: Date.now() }, { retain: true });
           Presence.goOnline();
           Presence.startTimers();
 
-          /* bandeja offline + solicitudes + respuestas + eventos */
+          /* bandeja offline + solicitudes + respuestas + eventos + grupos */
           Mqtt.sub([
             `${NS}/dm/${uid}/#`,
             `${NS}/freq/${uid}/+`,
             `${NS}/fresp/${uid}/+`,
             T.evt(uid)
           ]);
+          Groups.subscribeAll();
           Friends.all().forEach((f) => Presence.watch(f.uid));
+
+          /* Service Worker + push (notificaciones con la app cerrada) */
+          Push.init().then(() => { if (Push.sub) Push.publishSub(); }).catch(() => {});
 
           Calls.init();
           Notify.load();
@@ -134,8 +144,44 @@ const Auth = {
     s.name = name;
     LS.set(K.session, s);
     Mqtt.publish(T.auth(s.uid), { salt: s.salt, hash: s.hash, iters: s.iters, name, created: Date.now() }, { retain: true });
-    Mqtt.publish(T.profile(s.uid), { uid: s.uid, name, updated: Date.now() }, { retain: true });
+    Mqtt.publish(T.profile(s.uid), { uid: s.uid, name, av: this.me.av || undefined, updated: Date.now() }, { retain: true });
     App.renderMyAvatar();
+  },
+
+  /* ---- foto de perfil ---- */
+  async setAvatar(file) {
+    if (!file || !file.type.startsWith('image/')) throw new Error('Elige un archivo de imagen.');
+    if (file.size > 12 * 1024 * 1024) throw new Error('La imagen supera 12 MB.');
+    let dataURL = null;
+    /* comprimir progresivamente hasta un tamaño razonable para el perfil */
+    for (const [dim, q] of [[192, 0.75], [160, 0.62], [128, 0.5]]) {
+      const { b64 } = await compressImage(file, dim, q);
+      dataURL = `data:image/jpeg;base64,${b64}`;
+      if (b64.length <= 60000) break;
+    }
+    if (!dataURL) throw new Error('No se pudo procesar la imagen.');
+
+    const s = this.session();
+    if (!s) return;
+    this.me.av = dataURL;
+    s.av = dataURL;
+    LS.set(K.session, s);
+    Avatars.set(this.me.uid, dataURL);
+    Mqtt.publish(T.profile(this.me.uid), { uid: this.me.uid, name: this.me.name, av: dataURL, updated: Date.now() }, { retain: true });
+    App.renderAll();
+    UI.toast('Foto de perfil actualizada. Tus amigos la verán al instante.');
+  },
+
+  async removeAvatar() {
+    const s = this.session();
+    if (!s) return;
+    this.me.av = undefined;
+    delete s.av;
+    LS.set(K.session, s);
+    Avatars.remove(this.me.uid);
+    Mqtt.publish(T.profile(this.me.uid), { uid: this.me.uid, name: this.me.name, av: '', updated: Date.now() }, { retain: true });
+    App.renderAll();
+    UI.toast('Foto de perfil eliminada.');
   },
 
   logout() {

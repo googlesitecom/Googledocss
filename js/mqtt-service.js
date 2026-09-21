@@ -20,7 +20,15 @@ const T = {
   fresp: (to, from) => `${NS}/fresp/${to}/${from}`,
   dm: (to, from, id) => `${NS}/dm/${to}/${from}/${id}`,
   dmc: (to, from, id, i) => `${NS}/dm/${to}/${from}/${id}/${i}`,
-  evt: (u) => `${NS}/evt/${u}`
+  evt: (u) => `${NS}/evt/${u}`,
+  /* grupos */
+  group: (gid) => `${NS}/group/${gid}`,
+  gm: (gid, from, id) => `${NS}/gm/${gid}/${from}/${id}`,
+  gmc: (gid, from, id, i) => `${NS}/gm/${gid}/${from}/${id}/${i}`,
+  gsys: (gid, from) => `${NS}/gm/${gid}/sys/${from}`,
+  ginv: (u, gid) => `${NS}/ginv/${u}/${gid}`,
+  /* suscripción web push de cada usuario (notificaciones sin abrir la app) */
+  psub: (u) => `${NS}/psub/${u}`
 };
 
 const Mqtt = {

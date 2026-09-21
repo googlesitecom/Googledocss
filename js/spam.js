@@ -21,13 +21,16 @@ const Spam = {
     'crypto pump', 'double your', 'hot singles', 'viagra', 'casino', 'loan approved'
   ],
 
-  /* Devuelve {isSpam, score, reasons} */
-  check(uid, text) {
+  /* Devuelve {isSpam, score, reasons}
+     ts = marca temporal ORIGINAL del mensaje (no la de llegada):
+     así una avalancha de mensajes retenidos entregados de golpe al
+     reconectar NO se confunde con una ráfaga de spam en vivo.        */
+  check(uid, text, ts) {
     const t = String(text ?? '').trim();
-    const now = Date.now();
+    const now = (typeof ts === 'number' && ts > 0 && ts <= Date.now() + 60000) ? ts : Date.now();
     const norm = t.toLowerCase();
 
-    /* historial del remitente (ventana de 45 s) */
+    /* historial del remitente (ventana de 45 s sobre la hora de ENVÍO) */
     let arr = this._win.get(uid) || [];
     arr.push({ text: t, norm, ts: now });
     arr = arr.filter((m) => now - m.ts < 45000).slice(-30);

@@ -21,10 +21,12 @@ const K = {
   hist: (u, f) => `nexo_${u}_hist_${f}`,
   unread: (u) => `nexo_${u}_unread`,
   notifs: (u) => `nexo_${u}_notifs`,
-  spamStats: (u) => `nexo_${u}_spamstats`
+  spamStats: (u) => `nexo_${u}_spamstats`,
+  groups: (u) => `nexo_${u}_groups`,
+  avatars: (u) => `nexo_${u}_avatars`
 };
 
-/* IndexedDB para blobs de imágenes (no satura localStorage) */
+/* IndexedDB para blobs (imágenes, audios, fondo personalizado) */
 const IDB = {
   db: null,
   open() {
@@ -52,5 +54,39 @@ const IDB = {
       rq.onsuccess = () => resolve(rq.result || null);
       rq.onerror = () => reject(rq.error);
     });
+  },
+  del(key) {
+    return new Promise((resolve, reject) => {
+      if (!this.db) return reject(new Error('IDB no disponible'));
+      const tx = this.db.transaction('blobs', 'readwrite');
+      tx.objectStore('blobs').delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+};
+
+/* Avatares (fotos de perfil) — caché local por cuenta; la fuente de
+   verdad es el campo `av` del perfil retenido en MQTT. */
+const Avatars = {
+  cache() { return Auth.me ? LS.get(K.avatars(Auth.me.uid), {}) : {}; },
+  get(uid) { return this.cache()[uid] || null; },
+  set(uid, dataURL) {
+    if (!Auth.me) return;
+    const c = LS.get(K.avatars(Auth.me.uid), {});
+    c[uid] = { av: dataURL, ts: Date.now() };
+    LS.set(K.avatars(Auth.me.uid), c);
+  },
+  remove(uid) {
+    if (!Auth.me) return;
+    const c = LS.get(K.avatars(Auth.me.uid), {});
+    delete c[uid];
+    LS.set(K.avatars(Auth.me.uid), c);
+  },
+  /* contenido interno para un div.avatar: <img> o iniciales */
+  html(uid, name) {
+    const a = this.get(uid);
+    if (a && a.av) return `<img src="${esc(a.av)}" alt="">`;
+    return esc(initials(name || uid));
   }
 };

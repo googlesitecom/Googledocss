@@ -1,0 +1,239 @@
+/* groups.js — grupos de chat reales
+   - Crear grupo eligiendo amigos; los invitados reciben una invitación
+     retenida (les llega aunque estén desconectados) y se unen al abrir la app
+   - Descriptor del grupo retenido en nexo/v1/group/<gid> (fuente de verdad)
+   - Mensajes de grupo en nexo/v1/gm/<gid>/<autor>/<id> (retained + 7 días,
+     misma bandeja offline que los DM) con chunks para imagen/voz
+   - Salir del grupo notifica al resto; el historial vive por dispositivo  */
+'use strict';
+
+const Groups = {
+  /* ---------- persistencia local ---------- */
+  all() { return Auth.me ? LS.get(K.groups(Auth.me.uid), []) : []; },
+  save(l) { if (Auth.me) LS.set(K.groups(Auth.me.uid), l); },
+  get(gid) { return this.all().find((g) => g.id === gid) || null; },
+  count() { return this.all().length; },
+
+  subscribeAll() {
+    Mqtt.sub(`${NS}/ginv/${Auth.me.uid}/+`);
+    this.all().forEach((g) => {
+      Mqtt.sub(`${NS}/gm/${g.id}/#`);
+      /* vigilar presencia/perfil de todos los miembros (aunque no sean amigos) */
+      (g.members || []).forEach((u) => Presence.watch(u));
+    });
+  },
+
+  /* ---------- crear ---------- */
+  create(name, memberUids) {
+    name = String(name || '').trim();
+    if (name.length < 2 || name.length > 40) throw new Error('El nombre del grupo debe tener entre 2 y 40 caracteres.');
+    memberUids = (memberUids || []).filter((u) => u && u !== Auth.me.uid && Friends.isFriend(u));
+    if (!memberUids.length) throw new Error('Selecciona al menos un amigo para el grupo.');
+
+    const g = {
+      id: 'g' + rid(),
+      name,
+      creator: Auth.me.uid,
+      members: [Auth.me.uid, ...memberUids],
+      created: Date.now()
+    };
+    this.save([...this.all(), g]);
+
+    /* descriptor retenido: cualquier miembro puede recuperarlo */
+    this.publishDescriptor(g);
+    Mqtt.sub(`${NS}/gm/${g.id}/#`);
+
+    /* invitación retenida a cada miembro + push si está desconectado */
+    memberUids.forEach((u) => {
+      Mqtt.publish(T.ginv(u, g.id), {
+        gid: g.id, name: g.name, from: Auth.me.uid, fromName: Auth.me.name, ts: Date.now()
+      }, { retain: true, expiry: 2592000 });
+      Mqtt.publish(T.evt(u), { t: 'ginvite', gid: g.id, name: g.name, from: Auth.me.uid, fromName: Auth.me.name });
+      if (!Presence.isOnline(u)) {
+        Push.notify(u, 'Te añadieron a un grupo', `${Auth.me.name} te añadió al grupo «${g.name}»`, { chat: 'g:' + g.id });
+      }
+    });
+    return g;
+  },
+
+  publishDescriptor(g) {
+    Mqtt.publish(T.group(g.id), {
+      id: g.id, name: g.name, creator: g.creator, members: g.members, updated: Date.now()
+    }, { retain: true, expiry: 15552000 }); /* 180 días */
+  },
+
+  /* ---------- invitación retenida recibida ---------- */
+  onInvite(gid, m) {
+    if (!m || !m.gid) return;
+    if (this.get(gid)) { this.clearInvite(gid); return; }
+    const g = {
+      id: gid,
+      name: m.name || 'Grupo',
+      creator: m.from,
+      members: [Auth.me.uid, m.from].filter((v, i, a) => a.indexOf(v) === i),
+      created: m.ts || Date.now(),
+      invitedBy: m.from
+    };
+    this.save([...this.all(), g]);
+    Mqtt.sub(`${NS}/gm/${gid}/#`);
+    Presence.watch(m.from);
+    this.clearInvite(gid);
+    /* refrescar miembros desde el descriptor retenido (best effort) */
+    Mqtt.fetchRetained(T.group(gid), 2000).then((d) => {
+      if (d && Array.isArray(d.members) && d.members.includes(Auth.me.uid)) {
+        const list = this.all();
+        const mine = list.find((x) => x.id === gid);
+        if (mine) {
+          mine.members = d.members;
+          mine.name = d.name || mine.name;
+          this.save(list);
+          App.renderConvoList();
+        }
+      }
+    }).catch(() => {});
+
+    Notify.onGroupInvite({ gid, from: m.from, fromName: m.fromName || m.from, name: m.name || 'Grupo' });
+    App.renderConvoList();
+    if (Settings.sound) Sound.chime();
+  },
+
+  clearInvite(gid) {
+    Mqtt.publish(T.ginv(Auth.me.uid, gid), '', { retain: true });
+  },
+
+  /* ---------- salir ---------- */
+  leave(gid) {
+    const g = this.get(gid);
+    if (!g) return;
+    const rest = g.members.filter((u) => u !== Auth.me.uid);
+    const list = this.all().filter((x) => x.id !== gid);
+    this.save(list);
+    Mqtt.unsub(`${NS}/gm/${gid}/#`);
+
+    if (rest.length) {
+      const updated = { ...g, members: rest };
+      this.publishDescriptor(updated);
+      rest.forEach((u) => Mqtt.publish(T.evt(u), { t: 'gleft', gid, from: Auth.me.uid, fromName: Auth.me.name }));
+    } else {
+      /* era el último: limpiar el descriptor retenido */
+      Mqtt.publish(T.group(gid), '', { retain: true });
+    }
+    if (Chat.active === 'g:' + gid) Chat.close();
+    App.renderConvoList();
+    UI.toast(`Saliste del grupo «${g.name}».`);
+  },
+
+  /* ---------- un miembro salió (evento en vivo) ---------- */
+  onMemberLeft(m) {
+    if (!m || !m.gid) return;
+    const list = this.all();
+    const g = list.find((x) => x.id === m.gid);
+    if (!g) return;
+    g.members = (g.members || []).filter((u) => u !== m.from);
+    this.save(list);
+    App.renderConvoList();
+    if (Chat.active === 'g:' + m.gid) Chat.renderHeaderInfo('g:' + m.gid);
+    UI.toast(`${m.fromName || m.from} salió del grupo «${g.name}».`);
+  },
+
+  /* ---------- helpers ---------- */
+  name(gid) { const g = this.get(gid); return g ? g.name : 'Grupo'; },
+  membersOf(gid) { const g = this.get(gid); return (g && g.members) || []; },
+  onlineCount(gid) {
+    return this.membersOf(gid).filter((u) => u !== Auth.me.uid && Presence.isOnline(u)).length;
+  },
+  memberNames(gid, max = 4) {
+    return this.membersOf(gid)
+      .filter((u) => u !== Auth.me.uid)
+      .slice(0, max)
+      .map((u) => Friends.name(u));
+  },
+
+  /* ---------- modal: crear grupo ---------- */
+  openCreateModal() {
+    const friends = Friends.all();
+    if (!friends.length) { UI.toast('Añade amigos antes de crear un grupo.'); return; }
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="modal group-modal">
+        <h3>Nuevo grupo</h3>
+        <p>Elige un nombre y selecciona a tus amigos. Recibirán una invitación al instante.</p>
+        <input id="grpName" class="set-input" maxlength="40" placeholder="Nombre del grupo (ej. Equipo de trabajo)">
+        <div class="grp-list">
+          ${friends.map((f) => `
+            <label class="grp-pick">
+              <input type="checkbox" value="${esc(f.uid)}">
+              <span class="avatar">${Avatars.html(f.uid, f.name)}</span>
+              <span class="g-info"><strong>${esc(f.name)}</strong><span>@${esc(f.uid)}</span></span>
+              <span class="pres-dot ${Presence.isOnline(f.uid) ? 'on' : ''}"></span>
+            </label>`).join('')}
+        </div>
+        <div class="m-acts">
+          <button class="btn-ghost" data-r="0">Cancelar</button>
+          <button class="btn-primary" data-r="1">Crear grupo</button>
+        </div>
+      </div>`;
+    root.hidden = false;
+    root.onclick = async (e) => {
+      const b = e.target.closest('[data-r]');
+      if (!b) return;
+      if (b.dataset.r === '0') { this.closeModal(); return; }
+      const name = $('#grpName').value;
+      const uids = $$('.grp-pick input:checked').map((i) => i.value);
+      try {
+        const g = this.create(name, uids);
+        this.closeModal();
+        App.openChat('g:' + g.id);
+      } catch (ex) {
+        UI.toast(ex.message || 'No se pudo crear el grupo.');
+      }
+    };
+    setTimeout(() => { const i = $('#grpName'); if (i) i.focus(); }, 60);
+  },
+
+  /* ---------- modal: miembros del grupo ---------- */
+  openMembersModal(gid) {
+    const g = this.get(gid);
+    if (!g) return;
+    const root = $('#modalRoot');
+    const members = g.members.map((u) => ({
+      uid: u,
+      name: u === Auth.me.uid ? Auth.me.name : Friends.name(u),
+      me: u === Auth.me.uid
+    }));
+    root.innerHTML = `
+      <div class="modal group-modal">
+        <h3>${esc(g.name)}</h3>
+        <p>${members.length} miembro${members.length !== 1 ? 's' : ''} · creado por @${esc(g.creator)}</p>
+        <div class="grp-list">
+          ${members.map((m) => `
+            <div class="grp-member">
+              <span class="avatar">${Avatars.html(m.uid, m.name)}</span>
+              <span class="g-info"><strong>${esc(m.name)}${m.me ? ' (tú)' : ''}</strong><span>@${esc(m.uid)}</span></span>
+              ${m.me ? '' : `<span class="pres-dot ${Presence.isOnline(m.uid) ? 'on' : ''}"></span>`}
+            </div>`).join('')}
+        </div>
+        <div class="m-acts">
+          <button class="btn-ghost" data-r="0">Cerrar</button>
+          <button class="btn-danger" data-r="leave">Salir del grupo</button>
+        </div>
+      </div>`;
+    root.hidden = false;
+    root.onclick = (e) => {
+      const b = e.target.closest('[data-r]');
+      if (!b) return;
+      if (b.dataset.r === 'leave') {
+        this.closeModal();
+        UI.confirm('Salir del grupo', `¿Seguro que quieres salir de «${g.name}»? Podrás ser añadido de nuevo por otro miembro.`, 'Salir', true)
+          .then((ok) => { if (ok) this.leave(gid); });
+      } else this.closeModal();
+    };
+  },
+
+  closeModal() {
+    const root = $('#modalRoot');
+    root.hidden = true;
+    root.innerHTML = '';
+    root.onclick = null;
+  }
+};

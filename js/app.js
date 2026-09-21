@@ -3,7 +3,7 @@
 
 /* Preferencias globales (persistidas) */
 const Settings = Object.assign(
-  { sound: true, browser: true, spam: true, sens: 'medio', theme: null },
+  { sound: true, browser: true, spam: true, sens: 'medio', theme: null, accentH: null, wp: 'none' },
   LS.get(K.prefs, {})
 );
 function saveSettings() { LS.set(K.prefs, Settings); }
@@ -17,6 +17,7 @@ const App = {
     if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
     document.documentElement.dataset.theme = t;
     this._themeIcon();
+    if (window.Theme) Theme.apply();
   },
   toggleTheme() {
     const cur = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
@@ -24,6 +25,7 @@ const App = {
     Settings.theme = cur;
     saveSettings();
     this._themeIcon();
+    if (window.Theme) Theme.apply();
   },
   _themeIcon() {
     const use = $('#themeToggle use');
@@ -41,6 +43,8 @@ const App = {
     this.showView('chats');
     this.renderAll();
     this.updateTitle();
+    this.maybeShowBanner();
+    this.handleHashRoute();
   },
   renderAll() {
     this.renderMyAvatar();
@@ -53,7 +57,7 @@ const App = {
   renderMyAvatar() {
     const av = $('#myAvatar');
     if (!av || !Auth.me) return;
-    av.textContent = initials(Auth.me.name);
+    av.innerHTML = Avatars.html(Auth.me.uid, Auth.me.name);
     avatarStyle(av, Auth.me.uid);
     av.title = `${Auth.me.name} · @${Auth.me.uid}`;
   },
@@ -72,9 +76,9 @@ const App = {
     if (v === 'settings') this.renderSettings();
     if (window.innerWidth <= 920) this.setChatOpen(false);
   },
-  openChat(uid) {
+  openChat(key) {
     this.showView('chats');
-    Chat.open(uid);
+    Chat.open(key);
   },
   setChatOpen(on) { document.body.classList.toggle('chat-open', on); },
 
@@ -101,24 +105,38 @@ const App = {
     if (!Auth.me) return;
     const list = $('#convoList');
     if (!list) return;
-    const friends = [...Friends.all()].sort((a, b) => Chat.lastActivity(b.uid) - Chat.lastActivity(a.uid));
-    if (!friends.length) {
-      list.innerHTML = `<div class="f-empty">Sin conversaciones todavía.<br>Añade amigos desde la pestaña <strong>Amigos</strong> para empezar.</div>`;
+
+    /* DM de amigos + grupos, ordenados por última actividad */
+    const items = [
+      ...Friends.all().map((f) => ({ key: f.uid, group: null })),
+      ...Groups.all().map((g) => ({ key: 'g:' + g.id, group: g }))
+    ].sort((a, b) => Chat.lastActivity(b.key) - Chat.lastActivity(a.key));
+
+    if (!items.length) {
+      list.innerHTML = `<div class="f-empty">Sin conversaciones todavía.<br>Añade amigos desde la pestaña <strong>Amigos</strong> o crea un <strong>grupo</strong>.</div>`;
       return;
     }
-    list.innerHTML = friends.map((f) => {
-      const last = Chat.lastMsg(f.uid);
-      let prev = 'Inicia la conversación';
-      if (last) prev = (last.mine ? 'Tú: ' : '') + (last.t === 'img' ? '· Imagen ·' : truncate(last.text, 42));
-      const un = Chat.unread(f.uid);
-      const active = Chat.active === f.uid && this.view === 'chats';
-      return `<button class="convo ${active ? 'active' : ''}" data-uid="${esc(f.uid)}">
-        <div class="avatar" style="--h:${hueOf(f.uid)}">${esc(initials(f.name))}</div>
+    list.innerHTML = items.map(({ key, group }) => {
+      const last = Chat.lastMsg(key);
+      const name = group ? group.name : Friends.name(key);
+      let prev = group ? `${group.members.length} miembros` : 'Inicia la conversación';
+      if (last) prev = (last.mine ? 'Tú: ' : (group ? (last.name || '') + ': ' : '')) +
+        (last.t === 'img' ? '· Imagen ·' : last.t === 'voice' ? '· Mensaje de voz ·' : truncate(last.text, group ? 34 : 42));
+      const un = Chat.unread(key);
+      const active = Chat.active === key && this.view === 'chats';
+      const avInner = group
+        ? `<span class="g-mark"><svg class="icon"><use href="#i-users"/></svg></span>`
+        : Avatars.html(key, name);
+      const dot = group
+        ? `<span class="pres-dot ${Groups.onlineCount(group.id) ? 'on' : ''}" title="grupo"></span>`
+        : `<span class="pres-dot ${Presence.isOnline(key) ? 'on' : ''}" title="${Presence.status(key)}"></span>`;
+      return `<button class="convo ${active ? 'active' : ''} ${group ? 'is-group' : ''}" data-key="${esc(key)}">
+        <div class="avatar" style="--h:${hueOf(group ? group.id : key)}">${avInner}</div>
         <div class="convo-main">
-          <div class="convo-top"><strong>${esc(f.name)}</strong><span class="convo-time">${last ? fmtDay(last.ts) : ''}</span></div>
+          <div class="convo-top"><strong>${esc(name)}</strong><span class="convo-time">${last ? fmtDay(last.ts) : ''}</span></div>
           <div class="convo-bot"><span class="convo-prev">${esc(prev)}</span>${un ? `<span class="unread">${un > 99 ? '99+' : un}</span>` : ''}</div>
         </div>
-        <span class="pres-dot ${Presence.isOnline(f.uid) ? 'on' : ''}" title="${Presence.status(f.uid)}"></span>
+        ${dot}
       </button>`;
     }).join('');
   },
@@ -135,7 +153,7 @@ const App = {
     html += `<div class="f-section"><h4>Solicitudes recibidas ${inArr.length ? `<span class="n-badge">${inArr.length}</span>` : ''}</h4>`;
     html += inArr.length ? inArr.map(([uid, p]) => `
       <div class="f-row">
-        <div class="avatar" style="--h:${hueOf(uid)}">${esc(initials(p.name))}</div>
+        <div class="avatar" style="--h:${hueOf(uid)}">${Avatars.html(uid, p.name)}</div>
         <div class="f-info"><strong>${esc(p.name)}</strong><span>@${esc(uid)}</span></div>
         <div class="f-acts">
           <button class="f-btn accept" data-act="accept" data-uid="${esc(uid)}"><svg class="icon"><use href="#i-check"/></svg>Aceptar</button>
@@ -148,7 +166,7 @@ const App = {
     if (outArr.length) {
       html += `<div class="f-section"><h4>Enviadas</h4>` + outArr.map((p) => `
         <div class="f-row">
-          <div class="avatar" style="--h:${hueOf(p.uid)}">${esc(initials(p.name))}</div>
+          <div class="avatar" style="--h:${hueOf(p.uid)}">${Avatars.html(p.uid, p.name)}</div>
           <div class="f-info"><strong>${esc(p.name)}</strong><span>@${esc(p.uid)} · esperando</span></div>
           <div class="f-acts"><button class="f-btn reject" data-act="cancel" data-uid="${esc(p.uid)}">Cancelar</button></div>
         </div>`).join('') + `</div>`;
@@ -157,7 +175,7 @@ const App = {
     html += `<div class="f-section"><h4>Mis amigos <span class="n-badge">${all.length}</span></h4>`;
     html += all.length ? all.map((f) => `
       <div class="f-row">
-        <div class="avatar" style="--h:${hueOf(f.uid)}">${esc(initials(f.name))}</div>
+        <div class="avatar" style="--h:${hueOf(f.uid)}">${Avatars.html(f.uid, f.name)}</div>
         <div class="f-info"><strong>${esc(f.name)}</strong><span>@${esc(f.uid)}</span></div>
         <span class="pres-dot ${Presence.isOnline(f.uid) ? 'on' : ''}" title="${Presence.status(f.uid)}"></span>
         <div class="f-acts">
@@ -172,25 +190,35 @@ const App = {
     box.innerHTML = html;
   },
 
+  /* ================== ajustes ================== */
   renderSettings() {
     if (!Auth.me) return;
     const box = $('#viewSettings');
     if (!box) return;
-    const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+    const perm = Push.permission();
+    const pushOn = Push.isOn();
+    const accentH = Settings.accentH != null ? Settings.accentH : Theme.DEFAULT_H;
 
     box.innerHTML = `
       <div class="set-card">
         <h3><svg class="icon"><use href="#i-users"/></svg>Perfil</h3>
         <p class="desc">Así te ven tus amigos. Tu cuenta es @${esc(Auth.me.uid)}.</p>
-        <div style="display:flex;gap:8px">
-          <input id="setName" class="set-input" maxlength="32" value="${esc(Auth.me.name)}">
-          <button id="btnSaveName" class="f-btn add">Guardar</button>
+        <div class="profile-row">
+          <div class="avatar big" style="--h:${hueOf(Auth.me.uid)}">${Avatars.html(Auth.me.uid, Auth.me.name)}</div>
+          <div class="profile-main">
+            <input id="setName" class="set-input" maxlength="32" value="${esc(Auth.me.name)}">
+            <div class="profile-btns">
+              <button id="btnAvatar" class="f-btn chat"><svg class="icon"><use href="#i-camera"/></svg>Cambiar foto</button>
+              ${Auth.me.av ? '<button id="btnNoAvatar" class="f-btn reject">Quitar foto</button>' : ''}
+            </div>
+          </div>
         </div>
+        <button id="btnSaveName" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px">Guardar nombre</button>
       </div>
 
       <div class="set-card">
         <h3><svg class="icon"><use href="#i-bell"/></svg>Notificaciones</h3>
-        <p class="desc">Avisos de mensajes, solicitudes de amistad y llamadas perdidas.</p>
+        <p class="desc">Avisos de mensajes, grupos, solicitudes y llamadas perdidas.</p>
         <div class="set-row">
           <div class="lbl"><strong>Sonidos</strong><span>Alertas audibles dentro de la app</span></div>
           <label class="sw"><input type="checkbox" data-set="sound" ${Settings.sound ? 'checked' : ''}><i></i></label>
@@ -199,15 +227,44 @@ const App = {
           <div class="lbl"><strong>Notificaciones del navegador</strong><span>Cuando la pestaña está en segundo plano</span></div>
           <label class="sw"><input type="checkbox" data-set="browser" ${Settings.browser ? 'checked' : ''}><i></i></label>
         </div>
-        ${perm === 'default' ? `<button id="btnPerm" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px">Activar notificaciones del navegador</button>` : ''}
-        ${perm === 'granted' ? `<p class="desc" style="margin:10px 0 0;color:var(--green)">Notificaciones del navegador activas.</p>` : ''}
+        <div class="set-row">
+          <div class="lbl"><strong>Notificaciones sin abrir la app</strong><span>Llegan aunque cierres Nexo (Web Push)</span></div>
+          ${pushOn
+            ? '<span class="push-ok"><svg class="icon"><use href="#i-check"/></svg>Activas</span>'
+            : perm === 'denied'
+              ? '<span class="push-deny">Bloqueado</span>'
+              : `<button id="btnPush" class="f-btn add">Activar</button>`}
+        </div>
+        ${pushOn ? `<p class="desc" style="margin:8px 0 0;color:var(--green)">Funciona con la app cerrada. En iPhone/iPad, instala Nexo en la pantalla de inicio para recibirlas.</p>` : ''}
+        ${perm === 'default' && !pushOn ? `<button id="btnPerm" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px">Activar notificaciones del navegador</button>` : ''}
         ${perm === 'denied' ? `<p class="desc" style="margin:10px 0 0;color:var(--red)">Permiso bloqueado: actívalo en los ajustes del sitio de tu navegador.</p>` : ''}
         <button id="btnTestNotif" class="f-btn chat" style="width:100%;justify-content:center;margin-top:10px">Probar notificación</button>
       </div>
 
       <div class="set-card">
+        <h3><svg class="icon"><use href="#i-palette"/></svg>Apariencia</h3>
+        <p class="desc">Personaliza el color de Nexo y el fondo de tus chats.</p>
+        <div class="lbl" style="margin-bottom:8px"><strong>Color de acento</strong></div>
+        <div class="acc-row">
+          ${Theme.PRESETS.map((p) => `<button class="acc-dot ${accentH === p.h ? 'sel' : ''}" data-acc="${p.h}" style="--ah:${p.h}" title="${p.name}"></button>`).join('')}
+          <label class="acc-custom" title="Color personalizado">
+            <input type="range" id="accHue" min="0" max="359" value="${accentH}">
+          </label>
+          <button class="acc-reset" id="btnAccReset" title="Volver al teal original">↺</button>
+        </div>
+        <div class="lbl" style="margin:14px 0 8px"><strong>Fondo del chat</strong></div>
+        <div class="wp-row">
+          ${Theme.WALLPAPERS.map((w) => `<button class="wp-tile ${Settings.wp === w.id ? 'sel' : ''} wp-${w.id}" data-wp="${w.id}" title="${w.name}"></button>`).join('')}
+          <button class="wp-tile custom ${Settings.wp === 'custom' ? 'sel' : ''}" data-wp="custom" title="Imagen propia">
+            <svg class="icon"><use href="#i-image"/></svg>
+          </button>
+        </div>
+        ${Settings.wp === 'custom' ? `<button id="btnWpClear" class="f-btn reject" style="margin-top:10px">Quitar imagen de fondo</button>` : ''}
+      </div>
+
+      <div class="set-card">
         <h3><svg class="icon"><use href="#i-shield"/></svg>Filtro anti-spam</h3>
-        <p class="desc">Los mensajes detectados como spam se entregan marcados en el chat, pero <strong>no generan notificaciones</strong>: ni sonido, ni aviso, ni badge.</p>
+        <p class="desc">Los mensajes detectados como spam se entregan marcados en el chat, pero <strong>no generan notificaciones</strong>: ni sonido, ni aviso, ni badge, ni push.</p>
         <div class="set-row">
           <div class="lbl"><strong>Activar filtro</strong><span>Suprimir notificaciones de spam</span></div>
           <label class="sw"><input type="checkbox" data-set="spam" ${Settings.spam ? 'checked' : ''}><i></i></label>
@@ -253,16 +310,21 @@ const App = {
     try { m = JSON.parse(payloadStr); } catch (e) { return; }
     const kind = p[2];
     if (kind === 'dm' && p[3] === Auth.me.uid) Chat.handleIncoming(p[4], p.slice(5), m);
+    else if (kind === 'gm') Chat.handleGroupIncoming(p[3], p[4], p.slice(5), m);
+    else if (kind === 'ginv' && p[3] === Auth.me.uid) Groups.onInvite(p[4], m);
     else if (kind === 'freq' && p[3] === Auth.me.uid) Friends.handleRequest(p[4], m);
     else if (kind === 'fresp' && p[3] === Auth.me.uid) Friends.handleResponse(p[4], m);
     else if (kind === 'evt' && p[3] === Auth.me.uid) this.handleEvt(m);
     else if (kind === 'presence') Presence.update(p[3], m);
+    else if (kind === 'profile') Friends.onProfile(p[3], m);
   },
   handleEvt(m) {
     if (!m || !m.t) return;
     if (m.t === 'ack') Chat.markAcked(m.id);
     else if (m.t === 'typing') Chat.showTyping(m.from, m.name || m.from);
     else if (m.t === 'unfriend') Friends.onUnfriend(m.from);
+    else if (m.t === 'gleft') Groups.onMemberLeft(m);
+    else if (m.t === 'ginvite') Groups.onInvite(m.gid, { gid: m.gid, name: m.name, from: m.from, fromName: m.fromName });
   },
 
   /* ================== lightbox ================== */
@@ -271,13 +333,27 @@ const App = {
     $('#lightbox').hidden = false;
   },
 
-  /* ================== permiso de notificaciones ================== */
-  maybeAskNotifPermission() {
-    if (!('Notification' in window) || Notification.permission !== 'default' || !Settings.browser) return;
-    try {
-      const r = Notification.requestPermission();
-      if (r && r.catch) r.catch(() => {});
-    } catch (e) {}
+  /* ================== banner de notificaciones (permiso con gesto) ================== */
+  maybeShowBanner() {
+    const b = $('#notifBanner');
+    if (!b) return;
+    const perm = Push.permission();
+    b.hidden = !(perm === 'default' && Settings.browser);
+  },
+  hideBanner() { const b = $('#notifBanner'); if (b) b.hidden = true; },
+
+  /* ================== ruta desde notificación (SW o URL) ================== */
+  handleRoute(route) {
+    if (!route) return;
+    if (route.chat) App.openChat(route.chat);
+    else if (route.friends) App.showView('friends');
+  },
+  handleHashRoute() {
+    const m = location.hash.match(/^#c=(.+)$/);
+    if (m) {
+      try { this.handleRoute({ chat: decodeURIComponent(m[1]) }); } catch (e) {}
+      history.replaceState(null, '', location.pathname + location.search);
+    }
   },
 
   /* ================== wiring ================== */
@@ -300,7 +376,6 @@ const App = {
         await Auth.login($('#liUser').value, $('#liPass').value);
         Auth.startAppConnection();
         App.showApp();
-        App.maybeAskNotifPermission();
       } catch (ex) {
         err.textContent = ex.message || 'No se pudo iniciar sesión.';
         err.hidden = false;
@@ -325,7 +400,6 @@ const App = {
         await Auth.register($('#riUser').value, $('#riName').value, $('#riPass').value);
         Auth.startAppConnection();
         App.showApp();
-        App.maybeAskNotifPermission();
         UI.toast('¡Cuenta creada! Bienvenido a Nexo.');
       } catch (ex) {
         err.textContent = ex.message || 'No se pudo crear la cuenta.';
@@ -357,10 +431,43 @@ const App = {
       if (p && !p.hidden && !p.contains(e.target) && !e.target.closest('#btnBell')) p.hidden = true;
     });
 
-    /* lista de conversaciones */
+    /* banner de activación de notificaciones (gesto del usuario) */
+    $('#notifBanner') && $('#notifBanner').addEventListener('click', async (e) => {
+      if (e.target.closest('#btnBannerNo')) { App.hideBanner(); return; }
+      if (e.target.closest('#btnBannerYes')) {
+        try {
+          await Push.enable();
+          App.hideBanner();
+          App.renderSettings();
+          UI.toast('Notificaciones activadas: te avisaremos aunque cierres la app.');
+          Notify.browser('Notificaciones activadas', 'Así te avisaremos de tus mensajes.', { friends: true, name: Auth.me.name });
+        } catch (ex) {
+          UI.toast(ex.message || 'No se pudo activar.');
+          App.renderSettings();
+        }
+      }
+    });
+
+    /* lista de conversaciones (DM + grupos) */
     $('#convoList').addEventListener('click', (e) => {
       const b = e.target.closest('.convo');
-      if (b) App.openChat(b.dataset.uid);
+      if (b) App.openChat(b.dataset.key);
+    });
+
+    /* crear grupo */
+    $('#btnNewGroup').addEventListener('click', () => Groups.openCreateModal());
+
+    /* cabecera de grupo → miembros */
+    $('#chatPeer').addEventListener('click', () => {
+      const k = Chat.kind(Chat.active);
+      if (k.type === 'group' && k.gid) Groups.openMembersModal(k.gid);
+    });
+    $('#btnLeaveGroup').addEventListener('click', () => {
+      const k = Chat.kind(Chat.active);
+      if (k.type !== 'group' || !k.gid) return;
+      const g = Groups.get(k.gid);
+      UI.confirm('Salir del grupo', `¿Seguro que quieres salir de «${g ? g.name : ''}»?`, 'Salir', true)
+        .then((ok) => { if (ok) Groups.leave(k.gid); });
     });
 
     /* amigos: búsqueda y acciones */
@@ -405,9 +512,20 @@ const App = {
       if (f) Chat.sendImage(f);
       e.target.value = '';
     });
+
+    /* mensajes de voz: grabar */
+    $('#btnMic').addEventListener('click', () => Voice.start());
+    $('#recCancel').addEventListener('click', () => Voice.cancel());
+    $('#recSend').addEventListener('click', () => Voice.stop(true));
+
+    /* reproductor de voz (delegación) */
     $('#messages').addEventListener('click', (e) => {
       const img = e.target.closest('.msg-img');
-      if (img && img.src) App.openLightbox(img.src);
+      if (img && img.src) { App.openLightbox(img.src); return; }
+      const play = e.target.closest('.v-play');
+      if (play) { Chat.toggleVoice(play.dataset.vid, play); return; }
+      const spd = e.target.closest('.v-speed');
+      if (spd) Chat.cycleVoiceSpeed(spd.dataset.vid, spd);
     });
 
     /* llamadas */
@@ -439,9 +557,30 @@ const App = {
       else Settings[k] = el.value;
       saveSettings();
       if (k === 'sens') UI.toast(`Sensibilidad anti-spam: ${({ bajo: 'baja', medio: 'media', alto: 'alta' })[Settings.sens]}`);
+      if (el.id === 'accHue') {
+        Settings.accentH = parseInt(el.value, 10) || 0;
+        saveSettings();
+        Theme.apply();
+      }
+    });
+    $('#viewSettings').addEventListener('input', (e) => {
+      if (e.target.id === 'accHue') {
+        Settings.accentH = parseInt(e.target.value, 10) || 0;
+        saveSettings();
+        Theme.apply();
+      }
     });
     $('#viewSettings').addEventListener('click', async (e) => {
       const btn = e.target.closest('button');
+      const acc = e.target.closest('[data-acc]');
+      const wp = e.target.closest('[data-wp]');
+      if (acc) { Theme.setAccent(parseInt(acc.dataset.acc, 10)); App.renderSettings(); return; }
+      if (wp) {
+        if (wp.dataset.wp === 'custom') { $('#wpInput').click(); return; }
+        Theme.setWallpaper(wp.dataset.wp);
+        App.renderSettings();
+        return;
+      }
       if (!btn) return;
       if (btn.id === 'btnSaveName') {
         try {
@@ -449,9 +588,20 @@ const App = {
           UI.toast('Nombre actualizado.');
           App.renderAll();
         } catch (ex) { UI.toast(ex.message); }
-      } else if (btn.id === 'btnPerm') {
-        if ('Notification' in window) {
-          try { await Notification.requestPermission(); } catch (ex) {}
+      } else if (btn.id === 'btnAvatar') {
+        $('#avatarInput').click();
+      } else if (btn.id === 'btnNoAvatar') {
+        await Auth.removeAvatar();
+      } else if (btn.id === 'btnWpClear') {
+        await Theme.clearCustomWallpaper();
+        App.renderSettings();
+      } else if (btn.id === 'btnPush' || btn.id === 'btnPerm') {
+        try {
+          await Push.enable();
+          App.renderSettings();
+          UI.toast('Notificaciones activadas: te avisaremos aunque cierres la app.');
+        } catch (ex) {
+          UI.toast(ex.message || 'No se pudo activar.');
           App.renderSettings();
         }
       } else if (btn.id === 'btnTestNotif') {
@@ -460,15 +610,40 @@ const App = {
         }
         UI.toast('Notificación de prueba enviada');
         if (Settings.sound) Sound.msg();
+      } else if (btn.id === 'btnAccReset') {
+        Theme.resetAccent();
+        App.renderSettings();
       } else if (btn.id === 'btnLogout') {
         Auth.logout();
       }
+    });
+    $('#avatarInput').addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      try { await Auth.setAvatar(f); } catch (ex) { UI.toast(ex.message || 'No se pudo cambiar la foto.'); }
+    });
+    $('#wpInput').addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      await Theme.setCustomWallpaper(f);
+      App.renderSettings();
     });
 
     /* lightbox */
     $('#lightbox').addEventListener('click', (e) => {
       if (e.target.id === 'lightbox' || e.target.closest('#lightboxClose')) $('#lightbox').hidden = true;
     });
+
+    /* rutas enviadas por el Service Worker (clic en notificación) */
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        const d = e.data || {};
+        if (d.nexoRoute) App.handleRoute(d.nexoRoute);
+        if (d.nexoPushSubChanged && Push.sub) Push.publishSub();
+      });
+    }
 
     /* al volver a la pestaña: limpiar no leídos del chat activo */
     document.addEventListener('visibilitychange', () => {
@@ -492,7 +667,7 @@ const App = {
     else if (pending) action = `<button class="f-btn ok" disabled>Solicitud enviada</button>`;
     else action = `<button class="f-btn add" data-act="add" data-uid="${esc(p.uid)}" data-name="${esc(p.name || p.uid)}"><svg class="icon"><use href="#i-user-plus"/></svg>Añadir</button>`;
     box.innerHTML = `<div class="f-card">
-      <div class="avatar" style="--h:${hueOf(p.uid)}">${esc(initials(p.name || p.uid))}</div>
+      <div class="avatar" style="--h:${hueOf(p.uid)}">${p.av ? `<img src="${esc(p.av)}" alt="">` : esc(initials(p.name || p.uid))}</div>
       <div class="f-info"><strong>${esc(p.name || p.uid)}</strong><span>@${esc(p.uid)}</span></div>
       ${action}
     </div>`;

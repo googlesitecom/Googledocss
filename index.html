@@ -3,10 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0a1014">
-<meta name="description" content="Nexo — mensajería, llamadas y notificaciones en tiempo real. 100% serverless, funciona desde GitHub Pages.">
+<meta id="metaTheme" name="theme-color" content="#0a1014">
+<meta name="description" content="Nexo — mensajería, grupos, llamadas, mensajes de voz y notificaciones en tiempo real. 100% serverless, funciona desde GitHub Pages.">
 <title>Nexo · Chat en tiempo real</title>
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Nexo">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -43,6 +49,10 @@
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="8.5" cy="9.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.5" cy="9.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="16.5" cy="13.5" r="1.1" fill="currentColor" stroke="none"/><path d="M12 22a10 10 0 0 1 0-20 c2.5 0 3 1.5 2 2.5-1.2 1.2-.4 3 1.3 3H18a3 3 0 0 1 3 3c0 6-4 11.5-9 11.5z"/></symbol>
 </svg>
 
 <!-- ============ Fallo de CDN ============ -->
@@ -65,10 +75,10 @@
       <h1>Conversa sin fronteras,<br><em>directo de persona a persona.</em></h1>
       <p class="hero-sub">Mensajería, imágenes y llamadas en tiempo real entre amigos. Sin servidores propietarios: tus conversaciones viajan por una red pública y tu historial vive en tu navegador.</p>
       <ul class="hero-feats">
-        <li><svg class="icon"><use href="#i-chat"/></svg>Mensajes e imágenes en tiempo real con bandeja offline</li>
+        <li><svg class="icon"><use href="#i-chat"/></svg>Mensajes, imágenes y voz en tiempo real con bandeja offline</li>
+        <li><svg class="icon"><use href="#i-users"/></svg>Grupos y amigos con solicitudes que deben aceptarse</li>
+        <li><svg class="icon"><use href="#i-bell"/></svg>Notificaciones aunque cierres la app, con filtro anti-spam</li>
         <li><svg class="icon"><use href="#i-phone"/></svg>Llamadas de voz y video P2P (WebRTC)</li>
-        <li><svg class="icon"><use href="#i-bell"/></svg>Notificaciones inteligentes con filtro anti-spam</li>
-        <li><svg class="icon"><use href="#i-users"/></svg>Amigos con solicitudes que deben aceptarse</li>
       </ul>
     </div>
   </section>
@@ -143,6 +153,7 @@
 
     <div class="panel-body">
       <div id="viewChats" class="view">
+        <button id="btnNewGroup" class="new-group"><svg class="icon"><use href="#i-plus"/></svg>Nuevo grupo</button>
         <div id="convoList" class="list"></div>
       </div>
 
@@ -156,6 +167,8 @@
       </div>
 
       <div id="viewSettings" class="view" hidden></div>
+      <input type="file" id="avatarInput" accept="image/*" hidden>
+      <input type="file" id="wpInput" accept="image/*" hidden>
     </div>
   </aside>
 
@@ -178,9 +191,10 @@
           </div>
         </div>
         <div class="chat-actions">
-          <button id="btnCallAudio" class="icon-btn" title="Llamada de voz" aria-label="Llamada de voz"><svg class="icon"><use href="#i-phone"/></svg></button>
-          <button id="btnCallVideo" class="icon-btn" title="Videollamada" aria-label="Videollamada"><svg class="icon"><use href="#i-video"/></svg></button>
-          <button id="btnRemoveFriend" class="icon-btn danger" title="Eliminar amigo" aria-label="Eliminar amigo"><svg class="icon"><use href="#i-user-minus"/></svg></button>
+          <button id="btnCallAudio" class="icon-btn dm-only" title="Llamada de voz" aria-label="Llamada de voz"><svg class="icon"><use href="#i-phone"/></svg></button>
+          <button id="btnCallVideo" class="icon-btn dm-only" title="Videollamada" aria-label="Videollamada"><svg class="icon"><use href="#i-video"/></svg></button>
+          <button id="btnRemoveFriend" class="icon-btn danger dm-only" title="Eliminar amigo" aria-label="Eliminar amigo"><svg class="icon"><use href="#i-user-minus"/></svg></button>
+          <button id="btnLeaveGroup" class="icon-btn danger grp-only" title="Salir del grupo" aria-label="Salir del grupo"><svg class="icon"><use href="#i-logout"/></svg></button>
         </div>
       </header>
 
@@ -191,8 +205,16 @@
       <footer id="composer">
         <input type="file" id="fileInput" accept="image/*" hidden>
         <button id="btnAttach" class="icon-btn" title="Enviar imagen" aria-label="Adjuntar imagen"><svg class="icon"><use href="#i-image"/></svg></button>
+        <button id="btnMic" class="icon-btn" title="Mensaje de voz" aria-label="Grabar mensaje de voz"><svg class="icon"><use href="#i-mic"/></svg></button>
         <textarea id="msgInput" rows="1" placeholder="Escribe un mensaje…" maxlength="4000"></textarea>
         <button id="btnSend" class="send-btn" title="Enviar" aria-label="Enviar"><svg class="icon"><use href="#i-send"/></svg></button>
+        <div id="recBar" hidden>
+          <span class="rec-dot"></span>
+          <span id="recTime">00:00</span>
+          <span id="recWave" class="v-wave rec"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <button id="recCancel" class="icon-btn danger" title="Cancelar" aria-label="Cancelar grabación"><svg class="icon"><use href="#i-x"/></svg></button>
+          <button id="recSend" class="send-btn" title="Enviar mensaje de voz" aria-label="Enviar mensaje de voz"><svg class="icon"><use href="#i-send"/></svg></button>
+        </div>
       </footer>
     </div>
   </main>
@@ -204,6 +226,14 @@
       <button id="notifClear" class="link-btn">Limpiar</button>
     </header>
     <div id="notifList"></div>
+  </div>
+
+  <!-- Banner para activar notificaciones (con gesto del usuario) -->
+  <div id="notifBanner" class="notif-banner" hidden>
+    <svg class="icon"><use href="#i-bell"/></svg>
+    <div class="nb-txt"><strong>No te pierdas nada</strong><span>Activa las notificaciones y te avisaremos aunque cierres Nexo.</span></div>
+    <button id="btnBannerYes" class="f-btn add">Activar</button>
+    <button id="btnBannerNo" class="icon-btn" title="Ahora no"><svg class="icon"><use href="#i-x"/></svg></button>
   </div>
 
   <!-- Overlay de llamada -->
@@ -246,11 +276,15 @@
 <script src="./js/spam.js"></script>
 <script src="./js/mqtt-service.js"></script>
 <script src="./js/presence.js"></script>
+<script src="./js/push.js"></script>
 <script src="./js/notify.js"></script>
 <script src="./js/auth.js"></script>
 <script src="./js/friends.js"></script>
+<script src="./js/groups.js"></script>
+<script src="./js/voice.js"></script>
 <script src="./js/chat.js"></script>
 <script src="./js/calls.js"></script>
+<script src="./js/theme.js"></script>
 <script src="./js/app.js"></script>
 </body>
 </html>
