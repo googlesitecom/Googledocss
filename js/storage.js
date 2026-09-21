@@ -23,7 +23,8 @@ const K = {
   notifs: (u) => `nexo_${u}_notifs`,
   spamStats: (u) => `nexo_${u}_spamstats`,
   groups: (u) => `nexo_${u}_groups`,
-  avatars: (u) => `nexo_${u}_avatars`
+  avatars: (u) => `nexo_${u}_avatars`,
+  stickers: (u) => `nexo_${u}_stickers`
 };
 
 /* IndexedDB para blobs (imágenes, audios, fondo personalizado) */

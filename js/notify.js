@@ -68,7 +68,7 @@ const Notify = {
     if (viewing) return;
 
     const fromName = m.gname ? `${m.name || fromUid || ''} · ${m.gname}` : (m.name || chatKey);
-    const preview = m.t === 'img' ? '· Imagen ·' : m.t === 'voice' ? '· Mensaje de voz ·' : truncate(m.text, 70);
+    const preview = m.t === 'img' ? '· Imagen ·' : m.t === 'voice' ? '· Mensaje de voz ·' : m.t === 'stk' ? '· Sticker ·' : truncate(m.text, 70);
 
     Chat.bumpUnread(chatKey);
     this.push({ type: 'msg', from: chatKey, fromName, text: preview });

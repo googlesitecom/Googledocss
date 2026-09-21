@@ -17,7 +17,7 @@ const App = {
     if (!t) t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
     document.documentElement.dataset.theme = t;
     this._themeIcon();
-    if (window.Theme) Theme.apply();
+    if (typeof Theme !== 'undefined') Theme.apply();
   },
   toggleTheme() {
     const cur = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
@@ -25,7 +25,7 @@ const App = {
     Settings.theme = cur;
     saveSettings();
     this._themeIcon();
-    if (window.Theme) Theme.apply();
+    if (typeof Theme !== 'undefined') Theme.apply();
   },
   _themeIcon() {
     const use = $('#themeToggle use');
@@ -121,7 +121,7 @@ const App = {
       const name = group ? group.name : Friends.name(key);
       let prev = group ? `${group.members.length} miembros` : 'Inicia la conversación';
       if (last) prev = (last.mine ? 'Tú: ' : (group ? (last.name || '') + ': ' : '')) +
-        (last.t === 'img' ? '· Imagen ·' : last.t === 'voice' ? '· Mensaje de voz ·' : truncate(last.text, group ? 34 : 42));
+        (last.t === 'img' ? '· Imagen ·' : last.t === 'voice' ? '· Mensaje de voz ·' : last.t === 'stk' ? '· Sticker ·' : truncate(last.text, group ? 34 : 42));
       const un = Chat.unread(key);
       const active = Chat.active === key && this.view === 'chats';
       const avInner = group
@@ -299,7 +299,8 @@ const App = {
     if (!Auth.me) return;
     const u = LS.get(K.unread(Auth.me.uid), {});
     const total = Object.values(u).reduce((a, b) => a + b, 0);
-    document.title = (total ? `(${total}) ` : '') + 'Nexo · Chat';
+    const inCall = typeof Calls !== 'undefined' && Calls.inCall();
+    document.title = (total ? `(${total}) ` : '') + 'Nexo · Chat' + (inCall ? ' · en llamada' : '');
   },
 
   /* ================== enrutado MQTT → módulos ================== */
@@ -325,6 +326,8 @@ const App = {
     else if (m.t === 'unfriend') Friends.onUnfriend(m.from);
     else if (m.t === 'gleft') Groups.onMemberLeft(m);
     else if (m.t === 'ginvite') Groups.onInvite(m.gid, { gid: m.gid, name: m.name, from: m.from, fromName: m.fromName });
+    else if (m.t === 'gcall') { if (typeof Calls !== 'undefined') Calls.onGroupInvite(m); }
+    else if (m.t === 'callmedia') { if (typeof Calls !== 'undefined') Calls.onMediaEvt(m); }
   },
 
   /* ================== lightbox ================== */
@@ -518,19 +521,52 @@ const App = {
     $('#recCancel').addEventListener('click', () => Voice.cancel());
     $('#recSend').addEventListener('click', () => Voice.stop(true));
 
-    /* reproductor de voz (delegación) */
+    /* stickers: selector, añadir y pestañas */
+    $('#btnSticker').addEventListener('click', () => Stickers.togglePicker());
+    $('#stkClose').addEventListener('click', () => Stickers.closePicker());
+    $('#stkPanel').addEventListener('click', (e) => {
+      const tab = e.target.closest('.stk-tab');
+      if (tab) { Stickers.setTab(tab.dataset.tab); return; }
+      Stickers.onPickerClick(e);
+    });
+    $('#stkAddBtn') && $('#stkAddBtn').addEventListener('click', () => $('#stkInput').click());
+    $('#stkInput').addEventListener('change', (e) => {
+      const files = [...(e.target.files || [])];
+      e.target.value = '';
+      if (files.length) Stickers.addFiles(files);
+    });
+
+    /* al hacer clic en los mensajes: cerrar el panel de stickers */
     $('#messages').addEventListener('click', (e) => {
+      const fav = e.target.closest('.stk-fav');
+      if (fav) {
+        const id = fav.dataset.fav;
+        const m = (Chat.hist(Chat.active) || []).find((x) => x.id === id);
+        if (m) Stickers.favFromMessage(m);
+        return;
+      }
       const img = e.target.closest('.msg-img');
       if (img && img.src) { App.openLightbox(img.src); return; }
+      const stk = e.target.closest('.msg-stk');
+      if (stk && stk.src) { App.openLightbox(stk.src); return; }
       const play = e.target.closest('.v-play');
       if (play) { Chat.toggleVoice(play.dataset.vid, play); return; }
       const spd = e.target.closest('.v-speed');
       if (spd) Chat.cycleVoiceSpeed(spd.dataset.vid, spd);
+      if (!$('#stkPanel').hidden) Stickers.closePicker();
     });
 
-    /* llamadas */
-    $('#btnCallAudio').addEventListener('click', () => Chat.active && Calls.start(Chat.active, false));
-    $('#btnCallVideo').addEventListener('click', () => Chat.active && Calls.start(Chat.active, true));
+    /* llamadas (1:1 y grupo) */
+    $('#btnCallAudio').addEventListener('click', () => Chat.active && !String(Chat.active).startsWith('g:') && Calls.start(Chat.active, false));
+    $('#btnCallVideo').addEventListener('click', () => Chat.active && !String(Chat.active).startsWith('g:') && Calls.start(Chat.active, true));
+    $('#btnGrpCallAudio').addEventListener('click', () => {
+      const k = Chat.kind(Chat.active);
+      if (k.type === 'group' && k.gid) Calls.startGroup(k.gid, false);
+    });
+    $('#btnGrpCallVideo').addEventListener('click', () => {
+      const k = Chat.kind(Chat.active);
+      if (k.type === 'group' && k.gid) Calls.startGroup(k.gid, true);
+    });
     $('#callControls').addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]');
       if (!b) return;
@@ -540,7 +576,12 @@ const App = {
       else if (act === 'hangup') Calls.hangup();
       else if (act === 'mic') Calls.toggleMic();
       else if (act === 'cam') Calls.toggleCam();
+      else if (act === 'screen') Calls.toggleScreen();
+      else if (act === 'minimize') Calls.minimize();
     });
+    /* banner de llamada en segundo plano */
+    $('#cbReturn').addEventListener('click', () => Calls.restore());
+    $('#cbHangup').addEventListener('click', () => Calls.hangup());
     $('#btnRemoveFriend').addEventListener('click', () => {
       if (!Chat.active) return;
       const uid = Chat.active;

@@ -107,6 +107,7 @@ const Chat = {
     App.setChatOpen(true);
     $('#chatView').hidden = false;
     $('#emptyState').hidden = true;
+    if (typeof Stickers !== 'undefined' && Stickers.closePicker) Stickers.closePicker();
     this.renderHeaderInfo(key);
     this.renderMessages(key);
     this.clearUnread(key);
@@ -191,7 +192,7 @@ const Chat = {
 
   /* push a desconectados + anti-spam en origen */
   afterSend(key, m) {
-    const preview = m.t === 'img' ? 'Imagen' : m.t === 'voice' ? 'Mensaje de voz' : truncate(m.text, 60);
+    const preview = m.t === 'img' ? 'Imagen' : m.t === 'voice' ? 'Mensaje de voz' : m.t === 'stk' ? 'Sticker' : truncate(m.text, 60);
     const res = Spam.check('out:' + Auth.me.uid, m.t === 'msg' ? m.text : preview);
     if (res.isSpam && Settings.spam) return; /* spam: sin push */
 
@@ -247,14 +248,14 @@ const Chat = {
     }
   },
 
-  /* ---------- envío por chunks común (imagen / voz) ---------- */
+  /* ---------- envío por chunks común (imagen / voz / sticker) ---------- */
   async sendChunked(key, { b64, msgT, meta = {}, blobType = 'image/jpeg' }) {
     const id = rid();
     const ts = Date.now();
     const n = Math.ceil(b64.length / CHUNK);
     for (let i = 0; i < n; i++) {
       const chunk = {
-        t: msgT === 'img' ? 'imgc' : 'voic', id, i, n,
+        t: msgT === 'img' ? 'imgc' : msgT === 'voice' ? 'voic' : 'stkc', id, i, n,
         from: Auth.me.uid, name: Auth.me.name, ts,
         ...meta,
         data: b64.substr(i * CHUNK, CHUNK)
@@ -309,11 +310,17 @@ const Chat = {
       if (rest.length !== 2) return;
       this.onChunk(from, from, rest[0], parseInt(rest[1], 10) || 0, m, 'voice');
     }
+    else if (m.t === 'stkc') {
+      if (rest.length !== 2) return;
+      this.onChunk(from, from, rest[0], parseInt(rest[1], 10) || 0, m, 'stk');
+    }
   },
 
   /* ================= recepción GRUPO ================= */
   handleGroupIncoming(gid, from, rest, m) {
-    if (!m || !m.t || from === Auth.me.uid) return;
+    if (!m || !m.t) return;
+    if (m.t === 'gcalle') { if (typeof Calls !== 'undefined') Calls.onGroupEvt(gid, m); return; }
+    if (from === Auth.me.uid) return;
     const key = 'g:' + gid;
     if (m.t === 'gtyping') { this.showTyping(key, m.name || from); return; }
     if (m.t === 'msg') {
@@ -331,9 +338,9 @@ const Chat = {
       Notify.onIncomingMessage(key, msg, res, from);
       this.clearTopic(T.gm(gid, from, id));
     }
-    else if (m.t === 'imgc' || m.t === 'voic') {
+    else if (m.t === 'imgc' || m.t === 'voic' || m.t === 'stkc') {
       if (rest.length !== 2) return;
-      this.onChunk(key, from, rest[0], parseInt(rest[1], 10) || 0, m, m.t === 'imgc' ? 'img' : 'voice');
+      this.onChunk(key, from, rest[0], parseInt(rest[1], 10) || 0, m, m.t === 'imgc' ? 'img' : m.t === 'voic' ? 'voice' : 'stk');
     }
   },
 
@@ -346,7 +353,9 @@ const Chat = {
         key, from, n: m.n || 0,
         meta: kindT === 'voice'
           ? { name: m.name || from, ts: m.ts || Date.now(), dur: m.dur || 0, mime: m.mime || 'audio/webm' }
-          : { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h },
+          : kindT === 'stk'
+            ? { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h, mime: m.mime || 'image/webp' }
+            : { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h },
         kindT,
         chunks: {}
       };
@@ -361,15 +370,17 @@ const Chat = {
 
       (async () => {
         try {
-          const blobType = type === 'voice' ? (meta.mime || 'audio/webm') : 'image/jpeg';
+          const blobType = type === 'voice' ? (meta.mime || 'audio/webm') : type === 'stk' ? (meta.mime || 'image/webp') : 'image/jpeg';
           const blob = b64ToBlob(b64, blobType);
           await IDB.put(id, blob);
-          const res = Spam.check(from, type === 'img' ? '[imagen]' : '[mensaje de voz]', meta.ts || Date.now());
+          const label = type === 'img' ? '[imagen]' : type === 'stk' ? '[sticker]' : '[mensaje de voz]';
+          const res = Spam.check(from, label, meta.ts || Date.now());
           const msg = {
             t: type, id, from, name: meta.name, ts: meta.ts, mine: false,
             spam: res.isSpam, spamReasons: res.reasons, spamScore: res.score
           };
           if (type === 'img') { msg.w = meta.w; msg.h = meta.h; }
+          else if (type === 'stk') { msg.w = meta.w; msg.h = meta.h; msg.mime = meta.mime; }
           else { msg.dur = meta.dur; msg.mime = meta.mime; }
           const k = this.kind(key);
           if (k.type === 'group') msg.gname = Groups.name(k.gid);
@@ -453,8 +464,8 @@ const Chat = {
   },
 
   hydrateMedia(scope) {
-    /* imágenes */
-    $$('.msg-img[data-img]', scope).forEach((el) => {
+    /* imágenes y stickers */
+    $$('.msg-img[data-img], .msg-stk[data-img]', scope).forEach((el) => {
       const id = el.dataset.img;
       if (this._objUrls[id]) { el.src = this._objUrls[id]; return; }
       IDB.get(id).then((blob) => {
@@ -501,7 +512,7 @@ const Chat = {
     });
   },
 
-  applyWallpaper() { if (window.Theme && Theme.applyWallpaper) Theme.applyWallpaper(); },
+  applyWallpaper() { if (typeof Theme !== 'undefined' && Theme.applyWallpaper) Theme.applyWallpaper(); },
 
   /* ================= reproductor de voz ================= */
   async toggleVoice(id, btn) {
@@ -569,24 +580,43 @@ function bubbleHTML(m, prev, chatKey) {
   const grp = prev && prev.mine === mine && prev.from === m.from && (m.ts - prev.ts) < 240000 ? 'grp' : '';
   const spamAttr = m.spam ? ` title="Motivos: ${esc((m.spamReasons || []).join(' · ') || 'patrón de spam')}"` : '';
   const isGroup = typeof chatKey === 'string' && chatKey.startsWith('g:');
-  /* nombre del autor en grupos cuando cambia el remitente */
-  const sender = isGroup && !mine && (!prev || prev.from !== m.from)
-    ? `<span class="g-sender">${esc(m.name || '')}</span>` : '';
+
+  /* en grupos: avatar + nombre de QUIEN ENVÍA en cada mensaje ajeno */
+  const showAvatar = isGroup && !mine && (!prev || prev.from !== m.from || prev.mine);
+  const sender = isGroup && !mine
+    ? `<span class="g-sender" style="--sh:${hueOf(m.from || '')}">${esc(m.name || m.from || '')}</span>` : '';
+  const avatar = showAvatar
+    ? `<div class="avatar msg-av" style="--h:${hueOf(m.from || '')}" title="${esc(m.name || m.from || '')}">${Avatars.html(m.from, m.name || m.from)}</div>` : '';
+  const inner = `${avatar}<div class="msg-col">${sender}`;
+
   const tick = mine && !isGroup ? `<span class="tick ${m.acked ? 'ok' : ''}">${m.acked ? '✓✓' : '✓'}</span>` : (mine ? '<span class="tick">✓</span>' : '');
   const spamChip = m.spam ? `<div class="spam-chip"><svg class="icon"><use href="#i-shield"/></svg>Spam — notificación bloqueada</div>` : '';
 
+  /* sticker: grande, sin burbuja (estilo WhatsApp) + ★ para guardarlo en favoritos */
+  if (m.t === 'stk') {
+    return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">${inner}
+      <div class="stk-wrap"${spamAttr}>
+        <img class="msg-stk" data-img="${esc(m.id)}" alt="Sticker" loading="lazy">
+        ${mine ? '' : `<button class="stk-fav" data-fav="${esc(m.id)}" title="Guardar en mis stickers favoritos"><svg class="icon"><use href="#i-star"/></svg></button>`}
+        ${spamChip}
+        ${tick}
+        <span class="msg-time">${time}</span>
+      </div>
+    </div></div>`;
+  }
+
   if (m.t === 'img') {
-    return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${sender}
+    return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${inner}
       <div class="bubble img ${m.spam ? 'spam' : ''}"${spamAttr}>
         <img class="msg-img" data-img="${esc(m.id)}" alt="Imagen compartida">
         ${spamChip}
         <span class="msg-time">${time}</span>
       </div>
-    </div>`;
+    </div></div>`;
   }
 
   if (m.t === 'voice') {
-    return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${sender}
+    return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${inner}
       <div class="bubble voice ${m.spam ? 'spam' : ''}"${spamAttr}>
         <div class="v-row">
           <button class="v-play" data-vid="${esc(m.id)}" title="Reproducir"><svg class="icon"><use href="#i-play"/></svg></button>
@@ -598,15 +628,15 @@ function bubbleHTML(m, prev, chatKey) {
         ${tick}
         <span class="msg-time">${time}</span>
       </div>
-    </div>`;
+    </div></div>`;
   }
 
-  return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">${sender}
+  return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">${inner}
     <div class="bubble ${m.spam ? 'spam' : ''}"${spamAttr}>
       <p class="msg-text">${linkify(esc(m.text))}</p>
       ${spamChip}
       ${tick}
       <span class="msg-time">${time}</span>
     </div>
-  </div>`;
+  </div></div>`;
 }
