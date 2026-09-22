@@ -310,6 +310,7 @@ const Chat = {
     if (m.t === 'img') return 'Imagen';
     if (m.t === 'voice') return 'Mensaje de voz';
     if (m.t === 'stk') return 'Sticker';
+    if (m.t === 'sys') return truncate(m.text, 64);
     return truncate(m.text, 64);
   },
 
@@ -779,6 +780,28 @@ const Chat = {
   handleGroupIncoming(gid, from, rest, m) {
     if (!m || !m.t) return;
     if (m.t === 'gcalle') { if (typeof Calls !== 'undefined') Calls.onGroupEvt(gid, m); return; }
+    /* mensaje de sistema del grupo (autor «sys», id propio, retenido):
+       «X añadió a Y», «X cambió el nombre…», «X eliminó a Y» →
+       queda en el historial de todos, también de quien conecte luego */
+    if (m.t === 'gsysmsg') {
+      const id = rest[0] || m.id;
+      const key = 'g:' + gid;
+      if (!id || this.hasMsg(key, id) || !Groups.get(gid)) return;
+      const msg = { t: 'sys', id, k: m.k, from: m.from, name: m.name, text: String(m.text || ''), ts: m.ts || Date.now() };
+      if (m.extra !== undefined) msg.extra = m.extra;
+      this.addHist(key, msg);
+      if (this.active === key) this.appendBubble(key, msg);
+      App.renderConvoList();
+      /* aviso discreto a quien no tenga el chat abierto (a los añadidos
+         ya les llega el toast de invitación: no duplicar) */
+      const aboutMe = m.k !== 'renamed' && m.extra && (
+        (Array.isArray(m.extra) && m.extra.some((x) => x && x.uid === Auth.me.uid)) ||
+        (m.extra.uid === Auth.me.uid));
+      if (this.active !== key && !aboutMe) {
+        UI.toast(truncate(m.text, 90), { icon: 'users', onClick: () => App.openChat(key) });
+      }
+      return;
+    }
     if (m.t === 'del') {
       /* eliminación para todos sobre el tema original (retenido):
          NO se limpia — los miembros desconectados la recibirán al reconectar */
@@ -1062,6 +1085,13 @@ function bubbleHTML(m, prev, chatKey) {
   const grp = prev && prev.mine === mine && prev.from === m.from && (m.ts - prev.ts) < 240000 ? 'grp' : '';
   const spamAttr = m.spam ? ` title="Motivos: ${esc((m.spamReasons || []).join(' · ') || 'patrón de spam')}"` : '';
   const isGroup = typeof chatKey === 'string' && chatKey.startsWith('g:');
+
+  /* mensaje de sistema del grupo: píldora centrada estilo WhatsApp
+     (quién fue añadido, renombrados, expulsados…) */
+  if (m.t === 'sys') {
+    const ico = m.k === 'renamed' ? 'i-edit' : m.k === 'removed' ? 'i-user-minus' : 'i-user-plus';
+    return `<div class="sys-msg" data-mid="${esc(m.id)}"><svg class="icon"><use href="#${ico}"/></svg><span>${esc(m.text)}</span><time>${time}</time></div>`;
+  }
 
   /* en grupos: avatar + nombre de QUIEN ENVÍA en cada mensaje ajeno
      (clicables → ver perfil) */
