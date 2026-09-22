@@ -11,6 +11,7 @@ function saveSettings() { LS.set(K.prefs, Settings); }
 
 const App = {
   view: 'chats',
+  _oldUid: null, /* puente temporal tras cambiar de usuario (DM/rx al uid antiguo) */
 
   /* ================== tema ================== */
   initTheme() {
@@ -250,6 +251,10 @@ const App = {
         <label class="bio-field">Acerca de
           <textarea id="setBio" class="set-input bio" maxlength="200" rows="2" placeholder="Ej. Disponible para hablar de día">${esc(Auth.me.bio || '')}</textarea>
         </label>
+        <div class="set-row user-row">
+          <div class="lbl"><strong>Usuario</strong><span>@${esc(Auth.me.uid)} · para iniciar sesión y que te encuentren</span></div>
+          <button id="btnChangeUser" class="f-btn chat"><svg class="icon"><use href="#i-edit"/></svg>Cambiar</button>
+        </div>
         <button id="btnSaveName" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px">Guardar cambios</button>
       </div>
 
@@ -361,11 +366,13 @@ const App = {
     let m = null;
     try { m = JSON.parse(payloadStr); } catch (e) { return; }
     const kind = p[2];
-    if (kind === 'dm' && p[3] === Auth.me.uid) Chat.handleIncoming(p[4], p.slice(5), m);
+    const me = Auth.me ? Auth.me.uid : null;
+    const old = this._oldUid || null; /* puente: mensajes aún dirigidos a mi uid anterior */
+    if (kind === 'dm' && (p[3] === me || (old && p[3] === old))) Chat.handleIncoming(p[4], p.slice(5), m);
     else if (kind === 'gm') Chat.handleGroupIncoming(p[3], p[4], p.slice(5), m);
     else if (kind === 'gcall') { if (typeof Calls !== 'undefined') Calls.onCallState(p[3], m); }
     /* reacciones con emoji (retenidas por mensaje) */
-    else if (kind === 'rx' && p[3] === Auth.me.uid) Chat.handleReaction(p[4], p[5], m, topic);
+    else if (kind === 'rx' && (p[3] === me || (old && p[3] === old))) Chat.handleReaction(p[4], p[5], m, topic);
     else if (kind === 'grx') Chat.handleReaction('g:' + p[3], p[5], m, topic);
     /* descriptor de grupo (nombre, miembros, FOTO) en vivo */
     else if (kind === 'group') { if (typeof Groups !== 'undefined') Groups.onDescriptor(p[3], m); }
@@ -382,6 +389,7 @@ const App = {
     else if (m.t === 'gack') Chat.ackFrom(m.from, m.id);
     else if (m.t === 'typing') Chat.showTyping(m.from, m.name || m.from);
     else if (m.t === 'unfriend') Friends.onUnfriend(m.from);
+    else if (m.t === 'rename') Friends.onRename(m.from, m.to, m.name);
     else if (m.t === 'gleft') Groups.onMemberLeft(m);
     else if (m.t === 'ginvite') Groups.onInvite(m.gid, { gid: m.gid, name: m.name, from: m.from, fromName: m.fromName });
     else if (m.t === 'gcall') { if (typeof Calls !== 'undefined') Calls.onGroupInvite(m); }
@@ -810,6 +818,8 @@ const App = {
           UI.toast('Perfil actualizado: tus amigos verán los cambios al instante.');
           App.renderAll();
         } catch (ex) { UI.toast(ex.message); }
+      } else if (btn.id === 'btnChangeUser') {
+        Auth.openChangeUserModal();
       } else if (btn.id === 'btnAvatar') {
         $('#avatarInput').click();
       } else if (btn.id === 'btnNoAvatar') {

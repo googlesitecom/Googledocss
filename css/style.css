@@ -1604,3 +1604,15 @@ mark { background: color-mix(in srgb, var(--amber) 55%, transparent); color: inh
 
 /* input de renombrar en su modal */
 #grpRename { margin-top: 10px; }
+
+/* ================== v9: cambiar el usuario ================== */
+
+/* fila «Usuario» en la tarjeta de perfil de los ajustes */
+.user-row { margin-top: 14px; padding: 12px 0 4px; border-top: 1px solid var(--line); }
+.user-row .lbl span { word-break: break-all; }
+.user-row .f-btn { flex: none; }
+
+/* campos del modal de cambio de usuario */
+.cu-field { margin-top: 12px; }
+.cu-field:first-of-type { margin-top: 14px; }
+#cuErr { margin: 10px 0 0; }

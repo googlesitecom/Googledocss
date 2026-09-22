@@ -97,6 +97,24 @@ const Auth = {
           Presence.goOnline();
           Presence.startTimers();
 
+          /* recién cambiado el usuario: re-publicar el puntero «moved»
+             (el LWT de la conexión anterior pudo pisarlo al recargar) y
+             tender un puente DM/rx temporal hacia el usuario antiguo      */
+          const s0 = this.session();
+          const prev = s0 && s0.prev;
+          if (prev) {
+            Mqtt.publish(T.presence(prev), { online: false, moved: uid, name: this.me.name, ts: Date.now() }, { retain: true, expiry: 2592000 });
+            delete s0.prev;
+            LS.set(K.session, s0);
+            Mqtt.sub([`${NS}/dm/${prev}/#`, `${NS}/rx/${prev}/#`]);
+            App._oldUid = prev;
+            setTimeout(() => {
+              App._oldUid = null;
+              Mqtt.unsub(`${NS}/dm/${prev}/#`);
+              Mqtt.unsub(`${NS}/rx/${prev}/#`);
+            }, 120000);
+          }
+
           /* bandeja offline + solicitudes + respuestas + eventos + grupos
              + reacciones de DM dirigidas a mí (retenidas) */
           Mqtt.sub([
@@ -149,6 +167,179 @@ const Auth = {
     Mqtt.publish(T.auth(s.uid), { salt: s.salt, hash: s.hash, iters: s.iters, name, created: Date.now() }, { retain: true });
     Mqtt.publish(T.profile(s.uid), { uid: s.uid, name, av: this.me.av || undefined, bio: this.me.bio || '', updated: Date.now() }, { retain: true });
     App.renderMyAvatar();
+  },
+
+  /* ================== CAMBIAR EL USUARIO (pide la contraseña) ==================
+     El usuario es la identidad en TODA la red (temas MQTT y ámbito de los
+     datos locales), así que el cambio es una migración completa:
+       1. confirma la identidad verificando la contraseña actual
+       2. comprueba que el nuevo usuario esté libre
+       3. publica cuenta + perfil bajo el nuevo usuario (misma contraseña)
+       4. re-publica los descriptores de sus grupos con el nuevo uid
+       5. avisa EN VIVO a los amigos conectados (evt «rename»)
+       6. deja un puntero retenido «moved» en la presencia antigua para los
+          amigos desconectados (se re-publica al reconectar; expira a 30 días)
+       7. limpia los retenidos antiguos (auth / profile / psub)
+       8. migra el almacenamiento local nexo_<old>_* → nexo_<nuevo>_*
+     Tras la recarga la app reconecta ya como @nuevo y tiende un puente DM
+     temporal hacia el usuario antiguo por si algún amigo tarda en enterarse.  */
+  async changeUsername(newU, pwd) {
+    newU = String(newU || '').trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(newU)) throw new Error('El usuario debe tener 3-20 caracteres: letras minúsculas, números o _.');
+    if (!pwd) throw new Error('Escribe tu contraseña para confirmar el cambio.');
+    const s = this.session();
+    if (!s) throw new Error('No hay sesión activa.');
+    if (newU === s.uid) throw new Error('Ese ya es tu usuario actual.');
+    if (typeof Calls !== 'undefined' && Calls.inCall && Calls.inCall())
+      throw new Error('Termina la llamada antes de cambiar tu usuario.');
+
+    /* 1) confirmar identidad con la contraseña */
+    const hash = await deriveKey(pwd, s.salt, s.iters || PBKDF2_ITERS);
+    if (hash !== s.hash) throw new Error('Contraseña incorrecta.');
+
+    /* 2) el nuevo usuario debe estar libre (director global del broker) */
+    const taken = await Mqtt.fetchRetained(T.auth(newU), 2600);
+    if (taken) throw new Error('Ese nombre de usuario ya está en uso.');
+
+    const old = s.uid;
+    const name = this.me.name;
+    const created = s.created || Date.now();
+
+    /* 3) cuenta + perfil bajo el nuevo usuario, misma contraseña */
+    Mqtt.publish(T.auth(newU), { salt: s.salt, hash: s.hash, iters: s.iters || PBKDF2_ITERS, name, created, prev: old }, { retain: true });
+    Mqtt.publish(T.profile(newU), { uid: newU, name, av: this.me.av || undefined, bio: this.me.bio || '', updated: Date.now() }, { retain: true });
+
+    /* 4) grupos: descriptores retenidos con el nuevo uid (miembro y creador) */
+    const glist = (typeof Groups !== 'undefined') ? Groups.all() : [];
+    glist.forEach((g) => {
+      if (Array.isArray(g.members) && g.members.includes(old)) {
+        g.members = g.members.map((u) => (u === old ? newU : u));
+        if (g.creator === old) g.creator = newU;
+        Groups.publishDescriptor(g);
+      }
+    });
+    if (typeof Groups !== 'undefined') Groups.save(glist);
+
+    /* 5) aviso en vivo a los amigos conectados */
+    ((typeof Friends !== 'undefined') ? Friends.all() : []).forEach((f) => {
+      Mqtt.publish(T.evt(f.uid), { t: 'rename', from: old, to: newU, name });
+    });
+
+    /* 6) puntero retenido para los amigos desconectados: lo vuelven a ver
+          al reconectar (expira a los 30 días). Se re-publica tras recargar
+          porque el LWT de la conexión antigua puede pisarlo.               */
+    Mqtt.publish(T.presence(old), { online: false, moved: newU, name, ts: Date.now() }, { retain: true, expiry: 2592000 });
+
+    /* 7) limpiar los retenidos del usuario antiguo */
+    Mqtt.publish(T.auth(old), '', { retain: true });
+    Mqtt.publish(T.profile(old), '', { retain: true });
+    Mqtt.publish(T.psub(old), '', { retain: true });
+
+    /* 8) parar latidos (no deben pisar el puntero) y migrar datos locales */
+    if (typeof Presence !== 'undefined' && Presence.stopTimers) Presence.stopTimers();
+    Presence.goOffline();
+    this._migrateLocal(old, newU);
+
+    /* 9) sesión nueva → la UI recarga y reconecta ya como @nuevo */
+    LS.set(K.session, {
+      uid: newU, name,
+      av: this.me.av || undefined, bio: this.me.bio || '',
+      salt: s.salt, hash: s.hash, iters: s.iters || PBKDF2_ITERS,
+      created, prev: old
+    });
+    return true;
+  },
+
+  /* migrar el ámbito local de la cuenta: nexo_<old>_* → nexo_<nuevo>_*
+     (amigos, solicitudes, historiales, no leídos, grupos, avatares,
+     stickers, notificaciones, anti-spam) + el avatar propio en el caché.
+     Los historiales se enumeran por amigo/grupo para que el guion bajo
+     de los uids no pueda producir colisiones de prefijo.                */
+  _migrateLocal(old, nu) {
+    try {
+      const from = `nexo_${old}_`, to = `nexo_${nu}_`;
+      /* claves exactas (sin ambigüedad posible) */
+      ['friends', 'pending_out', 'unread', 'notifs', 'spamstats', 'groups_av', 'groups', 'avatars', 'stickers']
+        .forEach((sf) => {
+          const k = from + sf;
+          const v = localStorage.getItem(k);
+          if (v != null) { localStorage.setItem(to + sf, v); localStorage.removeItem(k); }
+        });
+      /* historiales: solo los chats que existen (amigos + grupos) */
+      const peers = [];
+      try {
+        const fr = LS.get(to + 'friends', []);
+        fr.forEach((f) => f && f.uid && peers.push(f.uid));
+        const gr = LS.get(to + 'groups', []);
+        gr.forEach((g) => g && g.id && peers.push('g:' + g.id));
+      } catch (e) {}
+      peers.forEach((peer) => {
+        const k = from + 'hist_' + peer;
+        const v = localStorage.getItem(k);
+        if (v != null) { localStorage.setItem(to + 'hist_' + peer, v); localStorage.removeItem(k); }
+      });
+      /* el avatar propio queda cacheado bajo el uid antiguo */
+      const avKey = to + 'avatars';
+      const c = LS.get(avKey, {});
+      if (c[old] && !c[nu]) { c[nu] = c[old]; LS.set(avKey, c); }
+    } catch (e) { console.warn('migrateLocal', e); }
+  },
+
+  /* ---- modal: cambiar el usuario (solo pide la contraseña) ---- */
+  openChangeUserModal() {
+    const root = $('#modalRoot');
+    if (!root || !this.me) return;
+    if (typeof Calls !== 'undefined' && Calls.inCall && Calls.inCall()) {
+      UI.toast('Termina la llamada antes de cambiar tu usuario.');
+      return;
+    }
+    root.innerHTML = `
+      <div class="modal group-modal">
+        <h3>Cambiar tu usuario</h3>
+        <p>El usuario es tu identificador único: sirve para iniciar sesión y para que te encuentren. Tus amigos, grupos e historiales se conservan y tu contraseña no cambia.</p>
+        <label class="bio-field cu-field">Nuevo usuario
+          <input id="cuUser" class="set-input" maxlength="20" placeholder="minúsculas, números y _" spellcheck="false" autocapitalize="off" autocomplete="off">
+        </label>
+        <label class="bio-field cu-field">Contraseña actual
+          <input id="cuPass" class="set-input" type="password" autocomplete="current-password" placeholder="confirma que eres tú">
+        </label>
+        <p id="cuErr" class="form-err" hidden></p>
+        <div class="m-acts">
+          <button class="btn-ghost" data-r="0">Cancelar</button>
+          <button id="cuOk" class="btn-primary" data-r="1">Cambiar usuario</button>
+        </div>
+      </div>`;
+    root.hidden = false;
+    const err = $('#cuErr');
+    const inp = $('#cuUser');
+    const pass = $('#cuPass');
+    const close = () => { root.hidden = true; root.innerHTML = ''; root.onclick = null; };
+    const go = async () => {
+      if (!$('#cuOk')) return;
+      err.hidden = true;
+      const btn = $('#cuOk');
+      btn.disabled = true;
+      btn.textContent = 'Verificando…';
+      try {
+        await this.changeUsername(inp.value, pass.value);
+        UI.toast('¡Usuario cambiado! Reiniciando con tu nueva identidad…');
+        btn.textContent = '¡Hecho! Reiniciando…';
+        setTimeout(() => location.reload(), 900);
+      } catch (ex) {
+        err.textContent = ex.message || 'No se pudo cambiar el usuario.';
+        err.hidden = false;
+        btn.disabled = false;
+        btn.textContent = 'Cambiar usuario';
+      }
+    };
+    root.onclick = (e) => {
+      const b = e.target.closest('[data-r]');
+      if (!b) return;
+      if (b.dataset.r === '1') go();
+      else close();
+    };
+    [inp, pass].forEach((i) => { i.onkeydown = (e) => { if (e.key === 'Enter') go(); }; });
+    setTimeout(() => inp.focus(), 60);
   },
 
   /* ---- "acerca de" (bio) del perfil ---- */

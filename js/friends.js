@@ -124,6 +124,69 @@ const Friends = {
     UI.toast(`${name} eliminó la amistad contigo.`);
   },
 
+  /* ---- un contacto CAMBIÓ SU USUARIO (en vivo por evt «rename» o al
+     reconectar por el puntero retenido «moved» de su presencia antigua).
+     Migra su uid en mis datos locales: amigos, historial, no leídos,
+     avatar, fijados/silenciados y notificaciones. La conversación abierta
+     (si la hay) se re-apunta sin cerrarse.                              */
+  onRename(old, nu, name) {
+    if (!old || !nu || old === nu || !Auth.me || nu === Auth.me.uid) return;
+    const list = this.all();
+    const f = list.find((x) => x.uid === old);
+    if (!f) return; /* ya migrado antes (el puntero retenido se re-entrega) */
+    f.uid = nu;
+    if (name) f.name = name;
+    this.save(list);
+    this._migratePeerLocal(old, nu);
+    Presence.unwatch(old);
+    Presence.watch(nu);
+    if (Chat.active === old) {
+      Chat.active = nu;
+      Chat.renderHeaderInfo(nu);
+      Chat.renderMessages(nu);
+    }
+    App.renderAll();
+    UI.toast(`${f.name} cambió su usuario a @${nu}.`);
+  },
+
+  /* migración local de TODO lo que apunta al uid antiguo de un contacto */
+  _migratePeerLocal(old, nu) {
+    if (!Auth.me) return;
+    /* historial del chat con esa persona */
+    const ho = K.hist(Auth.me.uid, old), hn = K.hist(Auth.me.uid, nu);
+    const h = LS.get(ho, null);
+    if (h != null) { LS.set(hn, h); LS.del(ho); }
+    /* caché en memoria del chat abierto */
+    if (Chat._cache[old] && !Chat._cache[nu]) { Chat._cache[nu] = Chat._cache[old]; }
+    delete Chat._cache[old];
+    /* no leídos */
+    const uKey = K.unread(Auth.me.uid);
+    const u = LS.get(uKey, {});
+    if (u[old] != null) { if (u[nu] == null) u[nu] = u[old]; delete u[old]; LS.set(uKey, u); }
+    /* avatar cacheado bajo el uid antiguo */
+    const aKey = K.avatars(Auth.me.uid);
+    const a = LS.get(aKey, {});
+    if (a[old]) { if (!a[nu]) a[nu] = a[old]; delete a[old]; LS.set(aKey, a); }
+    /* chats fijados / silenciados (preferencias por chat) */
+    let pref = false;
+    if (Settings.pinned && Settings.pinned[old]) { Settings.pinned[nu] = true; delete Settings.pinned[old]; pref = true; }
+    if (Settings.muted && Settings.muted[old]) { Settings.muted[nu] = Settings.muted[old]; delete Settings.muted[old]; pref = true; }
+    if (pref && typeof saveSettings === 'function') saveSettings();
+    /* centro de notificaciones: rutas hacia el chat antiguo */
+    try {
+      const nKey = K.notifs(Auth.me.uid);
+      const n = LS.get(nKey, []);
+      let nch = false;
+      n.forEach((it) => { if (it && it.chat === old) { it.chat = nu; nch = true; } });
+      if (nch) LS.set(nKey, n);
+    } catch (e) {}
+    /* ventana anti-spam en memoria */
+    if (typeof Spam !== 'undefined' && Spam._win && Spam._win.has(old)) {
+      Spam._win.set(nu, Spam._win.get(old));
+      Spam._win.delete(old);
+    }
+  },
+
   /* ---- actualización del perfil de un amigo (nombre, foto y/o bio) ----
      El perfil retenido nexo/v1/profile/<uid> llega por la suscripción
      de presencia: cambió la foto o la bio → refrescar todas las vistas.  */

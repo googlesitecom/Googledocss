@@ -25,6 +25,12 @@ const Presence = {
       if (typeof App !== 'undefined' && App.refreshPresenceUI) App.refreshPresenceUI();
     }, 15000);
   },
+  /* se usa al CAMBIAR DE USUARIO: los latidos no deben pisar el puntero
+     «moved» que queda retenido sobre la presencia antigua */
+  stopTimers() {
+    if (this._hb) { clearInterval(this._hb); this._hb = null; }
+    if (this._stale) { clearInterval(this._stale); this._stale = null; }
+  },
 
   watch(uid) {
     if (!uid || uid === (Auth.me && Auth.me.uid)) return;
@@ -38,7 +44,14 @@ const Presence = {
   },
 
   update(uid, m) {
-    if (!m || typeof m.ts !== 'number') return;
+    if (!m) return;
+    /* puntero «moved»: esa cuenta cambió de usuario → migrar el contacto
+       (llega en vivo o retenido al reconectar; los no-amigos lo ignoran) */
+    if (m.moved && m.moved !== uid && typeof Friends !== 'undefined' && Friends.onRename) {
+      Friends.onRename(uid, m.moved, m.name);
+      return;
+    }
+    if (typeof m.ts !== 'number') return;
     const cur = this.map[uid];
     if (cur && cur.ts >= m.ts && cur.online === !!m.online) return;
     this.map[uid] = { online: !!m.online, ts: m.ts };
