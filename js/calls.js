@@ -554,6 +554,7 @@ const Calls = {
       if (this.state === 'active') {
         this._renderTiles();
         UI.toast(`${m.fromName || m.from} se unió a la llamada.`);
+        if (Settings.sound) Sound.join();
       } else this._renderGrpMembers();
       return;
     }
@@ -624,6 +625,7 @@ const Calls = {
           Sound.stopRing();
           clearTimeout(this._outTimer);
           this._startTimer();
+          if (Settings.sound) Sound.connect();
         }
         this.showOverlay('active', this.meta.name, remote);
         const md = this.media[uid];
@@ -640,6 +642,7 @@ const Calls = {
     Sound.stopRing();
     clearTimeout(this._outTimer);
     this._startTimer();
+    if (Settings.sound) Sound.connect();
     this.showOverlay('active', this.g.gname);
     this._publishCallState(); /* la llamada ya está viva: entran los que lleguen tarde */
   },
@@ -658,6 +661,7 @@ const Calls = {
           UI.toast('La llamada del grupo terminó.');
           this.teardown();
         } else {
+          if (Settings.sound) Sound.leave();
           if (this.state === 'active') this._renderTiles();
           else this._renderGrpMembers();
         }

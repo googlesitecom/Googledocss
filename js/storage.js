@@ -27,14 +27,20 @@ const K = {
   stickers: (u) => `nexo_${u}_stickers`
 };
 
-/* IndexedDB para blobs (imágenes, audios, fondo personalizado) */
+/* IndexedDB para blobs (imágenes, audios, fondo personalizado)
+   v2: añade el store «kv» — datos clave/valor que también lee el
+   Service Worker (p. ej. la lista de chats silenciados, para que el
+   push NO suene en un chat silenciado aunque la app esté cerrada). */
 const IDB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
       if (this.db) return resolve(this.db);
-      const r = indexedDB.open('nexo_media', 1);
-      r.onupgradeneeded = () => { r.result.createObjectStore('blobs'); };
+      const r = indexedDB.open('nexo_media', 2);
+      r.onupgradeneeded = () => {
+        if (!r.result.objectStoreNames.contains('blobs')) r.result.createObjectStore('blobs');
+        if (!r.result.objectStoreNames.contains('kv')) r.result.createObjectStore('kv');
+      };
       r.onsuccess = () => { this.db = r.result; resolve(this.db); };
       r.onerror = () => reject(r.error);
     });
@@ -64,6 +70,24 @@ const IDB = {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+  },
+  /* ---- clave/valor (compartido página + Service Worker) ---- */
+  kvSet(key, value) {
+    return new Promise((resolve, reject) => {
+      if (!this.db) return reject(new Error('IDB no disponible'));
+      const tx = this.db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
+  kvGet(key) {
+    return new Promise((resolve, reject) => {
+      if (!this.db) return reject(new Error('IDB no disponible'));
+      const rq = this.db.transaction('kv', 'readonly').objectStore('kv').get(key);
+      rq.onsuccess = () => resolve(rq.result === undefined ? null : rq.result);
+      rq.onerror = () => reject(rq.error);
+    });
   }
 };
 
@@ -89,5 +113,29 @@ const Avatars = {
     const a = this.get(uid);
     if (a && a.av) return `<img src="${esc(a.av)}" alt="">`;
     return esc(initials(name || uid));
+  }
+};
+
+/* Fotos de GRUPO — caché local por cuenta; la fuente de verdad es el
+   campo `av` del descriptor retenido del grupo (nexo/v1/group/<gid>). */
+const GroupAvatars = {
+  cache() { return LS.get(K.groups(Auth.me ? Auth.me.uid : '_') + '_av', {}); },
+  save(c) { if (Auth.me) LS.set(K.groups(Auth.me.uid) + '_av', c); },
+  get(gid) { const c = this.cache(); return (c[gid] && c[gid].av) || null; },
+  set(gid, dataURL) {
+    const c = this.cache();
+    c[gid] = { av: dataURL, ts: Date.now() };
+    this.save(c);
+  },
+  remove(gid) {
+    const c = this.cache();
+    delete c[gid];
+    this.save(c);
+  },
+  /* contenido interno para el avatar de un grupo: <img> o icono de grupo */
+  html(gid) {
+    const a = this.get(gid);
+    if (a) return `<img src="${esc(a)}" alt="">`;
+    return `<span class="g-mark"><svg class="icon"><use href="#i-users"/></svg></span>`;
   }
 };

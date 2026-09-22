@@ -448,10 +448,11 @@ select.seg {
 
 /* Composer */
 #composer {
-  display: flex; align-items: flex-end; gap: 8px;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 12px 16px 16px;
   background: var(--panel); border-top: 1px solid var(--line);
 }
+.comp-row { display: flex; align-items: flex-end; gap: 8px; }
 #msgInput {
   flex: 1; min-width: 0; resize: none; max-height: 132px;
   background: var(--panel2); border: 1px solid var(--line2);
@@ -637,12 +638,14 @@ select.seg {
 /* ============ Responsive ============ */
 
 .only-mobile { display: none !important; }
+.only-desktop { display: inline-flex; }
 
 @media (max-width: 920px) {
   #authScreen { grid-template-columns: 1fr; overflow: auto; }
   .auth-hero { min-height: 46vh; padding: 30px; }
   .hero-content { padding: 20px; }
   .hero-feats li:nth-child(n+3) { display: none; }
+  .only-desktop { display: none !important; }
 
   #appScreen { flex-direction: column; }
   #rail {
@@ -1270,3 +1273,201 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   #gameStage { position: fixed; inset: 60px 0 0 0; z-index: 40; }
   body.chat-open #gameStage { display: flex; }
 }
+
+/* ============================================================
+   NUEVO v6 · Modo enfoque, funciones WhatsApp, foto de grupo
+   ============================================================ */
+
+/* ---- modo enfoque: ocultar la barra lateral (solo chat/juego) ---- */
+body.focus #rail, body.focus #panel { display: none; }
+body.focus .notif-banner { left: 16px; }
+.focus-restore {
+  position: fixed; top: 14px; left: 14px; z-index: 90;
+  width: 42px; height: 42px; border-radius: 12px;
+  background: var(--elev); border: 1px solid var(--line2);
+  color: var(--muted); display: grid; place-items: center;
+  box-shadow: var(--shadow);
+  animation: focusBtnIn .25s cubic-bezier(.2, 1.3, .4, 1);
+  transition: color .15s, border-color .15s, transform .15s;
+}
+@keyframes focusBtnIn { from { opacity: 0; transform: translateX(-16px); } }
+.focus-restore:hover { color: var(--acc2); border-color: var(--acc); transform: translateY(-1px); }
+@media (max-width: 920px) { .focus-restore { display: none !important; } }
+
+/* ---- buscador dentro del chat ---- */
+#chatSearch {
+  display: flex; align-items: center; gap: 8px;
+  margin: 10px 16px 0; padding: 7px 8px 7px 13px;
+  background: var(--panel2); border: 1px solid var(--line2);
+  border-radius: 12px; animation: dropIn .18s ease;
+}
+#chatSearch .icon { width: 15px; height: 15px; color: var(--faint); flex: none; }
+#chatSearchInput {
+  flex: 1; min-width: 0; background: none; border: none; outline: none;
+  font-size: 13.5px; color: var(--txt);
+}
+#chatSearchCount { font-size: 11.5px; color: var(--faint); font-weight: 700; flex: none; white-space: nowrap; }
+mark { background: color-mix(in srgb, var(--amber) 55%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.msg-flash .bubble { animation: flashBg 1.8s ease; }
+@keyframes flashBg { 0%, 55% { background: var(--acc-soft); box-shadow: 0 0 0 3px var(--acc-soft); } }
+
+/* ---- barra de RESPUESTA en el compositor ---- */
+#replyBar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  background: var(--panel2); border: 1px solid var(--line2);
+  border-radius: 12px;
+  animation: dropIn .18s ease;
+}
+.rb-accent { width: 4px; align-self: stretch; border-radius: 4px; background: var(--grad); flex: none; }
+.rb-body { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.rb-body strong { font-size: 12.5px; color: var(--acc2); }
+.rb-body span { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- cita (mensaje respondido) dentro de la burbuja ---- */
+.quote {
+  display: grid; gap: 1px; text-align: left;
+  border-left: 3.5px solid var(--acc2);
+  background: color-mix(in srgb, var(--acc) 10%, var(--panel2));
+  padding: 5px 10px 6px; border-radius: 8px;
+  margin: 2px 0 7px; cursor: pointer; max-width: 320px;
+  transition: filter .15s;
+}
+.quote:hover { filter: brightness(1.12); }
+.quote strong { font-size: 12px; color: hsl(var(--sh, 172) 60% 56%); }
+[data-theme="light"] .quote strong { color: hsl(var(--sh, 172) 62% 32%); }
+.quote span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-row.mine .quote { border-color: rgba(255, 255, 255, .85); background: rgba(255, 255, 255, .18); }
+.msg-row.mine .quote strong { color: #fff; }
+.msg-row.mine .quote span { color: rgba(255, 255, 255, .85); }
+
+/* ---- reenviado / eliminado ---- */
+.msg-fwd {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: .4px;
+  text-transform: uppercase; opacity: .72; margin-bottom: 2px;
+}
+.msg-fwd .icon { width: 11px; height: 11px; }
+.bubble.deleted { padding: 8px 13px 7px; }
+.msg-del {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; font-style: italic; color: var(--muted);
+}
+.msg-row.mine .msg-del { color: rgba(255, 255, 255, .82); }
+.msg-del .icon { width: 13px; height: 13px; flex: none; }
+
+/* ---- botón ⋮ sobre la burbuja (menú de mensaje) ---- */
+.msg-row { position: relative; }
+.msg-more {
+  position: absolute; top: 0;
+  width: 26px; height: 26px; border-radius: 9px;
+  display: grid; place-items: center;
+  background: var(--elev); border: 1px solid var(--line);
+  color: var(--faint); opacity: 0; z-index: 5;
+  transition: opacity .15s, color .15s, border-color .15s;
+}
+.msg-row.mine .msg-more { right: -33px; }
+.msg-row.theirs .msg-more { left: -33px; }
+.msg-row:hover .msg-more, .msg-more:focus-visible { opacity: 1; }
+.msg-more:hover { color: var(--acc2); border-color: var(--acc); }
+@media (max-width: 480px) { .msg-row.mine .msg-more { right: -28px; } .msg-row.theirs .msg-more { left: -28px; } }
+
+/* ---- REACCIONES: chips bajo la burbuja ---- */
+.rx-row {
+  position: absolute; bottom: -12px; z-index: 3;
+  display: flex; gap: 3px; flex-wrap: wrap;
+}
+.msg-row.mine .rx-row { right: 12px; }
+.msg-row.theirs .rx-row { left: 12px; }
+.rx-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2.5px 8px 2.5px 6px;
+  background: var(--elev); border: 1px solid var(--line2);
+  border-radius: 99px; font-size: 13.5px; line-height: 1;
+  box-shadow: 0 3px 9px rgba(2, 12, 16, .3);
+  cursor: pointer; transition: transform .13s, border-color .13s;
+}
+.rx-chip:hover { transform: translateY(-1px) scale(1.05); }
+.rx-chip.mine { border-color: var(--acc); background: var(--acc-soft); }
+.rx-chip b { font-size: 10.5px; color: var(--muted); font-weight: 800; }
+.rx-chip.mine b { color: var(--acc2); }
+.msg-row:has(> .rx-row), .msg-row:has(.bubble .rx-row) { margin-bottom: 14px; }
+
+/* ---- menú contextual (mensajes y conversaciones) ---- */
+#ctxMenu {
+  position: fixed; z-index: 380; min-width: 214px; max-width: 280px;
+  background: var(--elev); border: 1px solid var(--line2);
+  border-radius: 15px; box-shadow: var(--shadow); padding: 6px;
+  animation: ctxIn .16s cubic-bezier(.2, 1.2, .4, 1);
+}
+@keyframes ctxIn { from { opacity: 0; transform: scale(.92) translateY(6px); } }
+.ctx-reactions {
+  display: flex; gap: 2px; flex-wrap: wrap;
+  padding: 4px 4px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px;
+}
+.ctx-rx {
+  font-size: 21px; width: 37px; height: 37px; border-radius: 10px;
+  display: grid; place-items: center;
+  transition: transform .12s, background .12s;
+}
+.ctx-rx:hover { transform: scale(1.25); background: var(--panel2); }
+.ctx-rx.sel { background: var(--acc-soft); box-shadow: inset 0 0 0 2px var(--acc2); }
+.ctx-item {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 9px 12px; border-radius: 10px;
+  font-size: 13.5px; font-weight: 600; color: var(--txt); text-align: left;
+  transition: background .13s;
+}
+.ctx-item:hover { background: var(--panel2); }
+.ctx-item .icon { width: 16px; height: 16px; color: var(--muted); flex: none; }
+.ctx-item.danger { color: var(--red); }
+.ctx-item.danger .icon { color: var(--red); }
+
+/* ---- selector de emojis ---- */
+#emojiPanel {
+  position: absolute; left: 16px; right: 16px; bottom: 96px; z-index: 45;
+  background: var(--elev); border: 1px solid var(--line2);
+  border-radius: 18px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: stkPanelIn .22s ease;
+}
+#emojiPanel header { display: flex; align-items: center; gap: 6px; padding: 9px 10px 9px 12px; border-bottom: 1px solid var(--line); }
+#emojiGrid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(42px, 1fr));
+  gap: 4px; padding: 12px; overflow-y: auto; max-height: 236px;
+}
+.emoji-cell {
+  font-size: 23px; height: 42px; border-radius: 10px;
+  display: grid; place-items: center;
+  transition: background .12s, transform .12s;
+}
+.emoji-cell:hover { background: var(--panel2); transform: scale(1.22); }
+.emoji-tab { font-size: 17px; padding: 6px 11px; }
+@media (max-width: 920px) { #emojiPanel { left: 8px; right: 8px; bottom: 90px; } }
+
+/* ---- lista: botón ⋮ de cada conversación + fijado/silenciado ---- */
+.convo-more {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  color: var(--faint); opacity: 0; z-index: 3;
+  transition: opacity .15s, color .15s, background .15s;
+}
+.convo:hover .convo-more, .convo:focus-within .convo-more { opacity: 1; }
+.convo-more:hover { background: var(--acc-soft); color: var(--acc2); }
+.convo:hover .pres-dot { opacity: 0; }
+.convo-tag { display: inline-flex; align-items: center; gap: 3px; flex: none; }
+.convo-tag .icon { width: 12px; height: 12px; color: var(--faint); }
+.convo-tag .pin .icon { color: var(--acc2); }
+.convo-tag .mute .icon { color: var(--amber); }
+
+/* ---- foto de grupo ---- */
+#chatView[data-chat-type="group"] #chatAvatar { border-radius: 50%; }
+#chatView[data-chat-type="group"] #chatAvatar img { border-radius: 50%; }
+.gp-row { display: flex; align-items: center; gap: 14px; justify-content: center; margin: 2px 0 4px; }
+.gp-row .avatar { width: 74px; height: 74px; border-radius: 50%; font-size: 26px; }
+.gp-acts { display: grid; gap: 8px; }
+
+/* ---- ajustes: volumen y vibración ---- */
+.vol-row { display: grid; gap: 8px; padding: 4px 0 2px; }
+.vol-row input[type="range"] { width: 100%; accent-color: var(--acc); height: 24px; }

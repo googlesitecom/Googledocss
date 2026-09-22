@@ -97,9 +97,11 @@ const Auth = {
           Presence.goOnline();
           Presence.startTimers();
 
-          /* bandeja offline + solicitudes + respuestas + eventos + grupos */
+          /* bandeja offline + solicitudes + respuestas + eventos + grupos
+             + reacciones de DM dirigidas a mí (retenidas) */
           Mqtt.sub([
             `${NS}/dm/${uid}/#`,
+            `${NS}/rx/${uid}/#`,
             `${NS}/freq/${uid}/+`,
             `${NS}/fresp/${uid}/+`,
             T.evt(uid)

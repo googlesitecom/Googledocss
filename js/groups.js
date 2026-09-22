@@ -18,6 +18,10 @@ const Groups = {
     Mqtt.sub(`${NS}/ginv/${Auth.me.uid}/+`);
     this.all().forEach((g) => {
       Mqtt.sub(`${NS}/gm/${g.id}/#`);
+      /* reacciones de grupo (retenidas, expiran a los 7 días) */
+      Mqtt.sub(`${NS}/grx/${g.id}/#`);
+      /* descriptor retenido: nombre, miembros y FOTO del grupo en vivo */
+      Mqtt.sub(T.group(g.id));
       /* estado de la llamada de grupo en curso (barra «Unirse») */
       Mqtt.sub(T.gcall(g.id));
       /* vigilar presencia/perfil de todos los miembros (aunque no sean amigos) */
@@ -44,6 +48,8 @@ const Groups = {
     /* descriptor retenido: cualquier miembro puede recuperarlo */
     this.publishDescriptor(g);
     Mqtt.sub(`${NS}/gm/${g.id}/#`);
+    Mqtt.sub(`${NS}/grx/${g.id}/#`);
+    Mqtt.sub(T.group(g.id));
     Mqtt.sub(T.gcall(g.id));
 
     /* invitación retenida a cada miembro + push si está desconectado */
@@ -61,8 +67,89 @@ const Groups = {
 
   publishDescriptor(g) {
     Mqtt.publish(T.group(g.id), {
-      id: g.id, name: g.name, creator: g.creator, members: g.members, updated: Date.now()
+      id: g.id, name: g.name, creator: g.creator, members: g.members,
+      av: GroupAvatars.get(g.id) || undefined,
+      updated: Date.now()
     }, { retain: true, expiry: 15552000 }); /* 180 días */
+  },
+
+  /* ---------- descriptor recibido (retenido o en vivo):
+     sincroniza nombre, miembros y FOTO del grupo ---------- */
+  onDescriptor(gid, m) {
+    if (!m || m.id !== gid || !Auth.me) return;
+    const list = this.all();
+    const mine = list.find((x) => x.id === gid);
+    if (!mine) return; /* no soy miembro: ignorar */
+    if (Array.isArray(m.members) && m.members.length && !m.members.includes(Auth.me.uid)) {
+      /* me quitaron del grupo (descriptor actualizado sin mí) */
+      list.splice(list.indexOf(mine), 1);
+      this.save(list);
+      Mqtt.unsub(`${NS}/gm/${gid}/#`);
+      Mqtt.unsub(`${NS}/grx/${gid}/#`);
+      Mqtt.unsub(T.group(gid));
+      Mqtt.unsub(T.gcall(gid));
+      GroupAvatars.remove(gid);
+      if (Chat.active === 'g:' + gid) Chat.close();
+      App.renderConvoList();
+      UI.toast(`Te quitaron del grupo «${mine.name}».`);
+      return;
+    }
+    let changed = false;
+    if (m.name && m.name !== mine.name) { mine.name = m.name; changed = true; }
+    if (Array.isArray(m.members)) {
+      const a = [...m.members].sort().join(',');
+      const b = [...(mine.members || [])].sort().join(',');
+      if (a !== b) { mine.members = m.members; changed = true; }
+    }
+    if (typeof m.av === 'string') {
+      const cur = GroupAvatars.get(gid);
+      if (m.av && m.av !== cur) { GroupAvatars.set(gid, m.av); changed = true; }
+      else if (!m.av && cur) { GroupAvatars.remove(gid); changed = true; }
+    }
+    if (m.creator) mine.creator = m.creator;
+    if (changed) {
+      this.save(list);
+      App.renderConvoList();
+      if (Chat.active === 'g:' + gid) Chat.renderHeaderInfo('g:' + gid);
+    }
+  },
+
+  /* ---------- FOTO DEL GRUPO ---------- */
+  async setPhoto(gid, file) {
+    const g = this.get(gid);
+    if (!g) throw new Error('Grupo no encontrado.');
+    if (!file || !file.type.startsWith('image/')) throw new Error('Elige un archivo de imagen.');
+    if (file.size > 12 * 1024 * 1024) throw new Error('La imagen supera 12 MB.');
+    let dataURL = null;
+    /* comprimir progresivamente (como los avatares de perfil) */
+    for (const [dim, q] of [[192, 0.75], [160, 0.62], [128, 0.5]]) {
+      const { b64 } = await compressImage(file, dim, q);
+      dataURL = `data:image/jpeg;base64,${b64}`;
+      if (b64.length <= 60000) break;
+    }
+    if (!dataURL) throw new Error('No se pudo procesar la imagen.');
+    GroupAvatars.set(gid, dataURL);
+    const list = this.all();
+    const idx = list.findIndex((x) => x.id === gid);
+    if (idx >= 0) { list[idx] = { ...list[idx], av: dataURL }; this.save(list); }
+    /* descriptor retenido → todos los miembros la ven al instante */
+    this.publishDescriptor(g);
+    App.renderConvoList();
+    if (Chat.active === 'g:' + gid) Chat.renderHeaderInfo('g:' + gid);
+    UI.toast('Foto del grupo actualizada: todos los miembros la verán al instante.');
+  },
+
+  async removePhoto(gid) {
+    const g = this.get(gid);
+    if (!g) return;
+    GroupAvatars.remove(gid);
+    const list = this.all();
+    const idx = list.findIndex((x) => x.id === gid);
+    if (idx >= 0) { const { av, ...rest } = list[idx]; list[idx] = rest; this.save(list); }
+    this.publishDescriptor(g);
+    App.renderConvoList();
+    if (Chat.active === 'g:' + gid) Chat.renderHeaderInfo('g:' + gid);
+    UI.toast('Foto del grupo eliminada.');
   },
 
   /* ---------- invitación retenida recibida ---------- */
@@ -79,10 +166,12 @@ const Groups = {
     };
     this.save([...this.all(), g]);
     Mqtt.sub(`${NS}/gm/${gid}/#`);
+    Mqtt.sub(`${NS}/grx/${gid}/#`);
+    Mqtt.sub(T.group(gid));
     Mqtt.sub(T.gcall(gid));
     Presence.watch(m.from);
     this.clearInvite(gid);
-    /* refrescar miembros desde el descriptor retenido (best effort) */
+    /* refrescar miembros y FOTO desde el descriptor retenido (best effort) */
     Mqtt.fetchRetained(T.group(gid), 2000).then((d) => {
       if (d && Array.isArray(d.members) && d.members.includes(Auth.me.uid)) {
         const list = this.all();
@@ -90,6 +179,7 @@ const Groups = {
         if (mine) {
           mine.members = d.members;
           mine.name = d.name || mine.name;
+          if (d.av) GroupAvatars.set(gid, d.av);
           this.save(list);
           App.renderConvoList();
         }
@@ -113,6 +203,8 @@ const Groups = {
     const list = this.all().filter((x) => x.id !== gid);
     this.save(list);
     Mqtt.unsub(`${NS}/gm/${gid}/#`);
+    Mqtt.unsub(`${NS}/grx/${gid}/#`);
+    Mqtt.unsub(T.group(gid));
     Mqtt.unsub(T.gcall(gid));
     /* sin miembro: limpiar el estado de «llamada en curso» si lo había */
     if (typeof Calls !== 'undefined' && Calls.ongoing) delete Calls.ongoing[gid];
@@ -198,7 +290,7 @@ const Groups = {
     setTimeout(() => { const i = $('#grpName'); if (i) i.focus(); }, 60);
   },
 
-  /* ---------- modal: miembros del grupo ---------- */
+  /* ---------- modal: miembros del grupo (con FOTO del grupo) ---------- */
   openMembersModal(gid) {
     const g = this.get(gid);
     if (!g) return;
@@ -208,8 +300,16 @@ const Groups = {
       name: u === Auth.me.uid ? Auth.me.name : Friends.name(u),
       me: u === Auth.me.uid
     }));
+    const hasPhoto = !!GroupAvatars.get(gid);
     root.innerHTML = `
       <div class="modal group-modal">
+        <div class="gp-row">
+          <div class="avatar" style="--h:${hueOf(g.id)}">${GroupAvatars.html(gid)}</div>
+          <div class="gp-acts">
+            <button id="btnGPhoto" class="f-btn chat"><svg class="icon"><use href="#i-camera"/></svg>Cambiar foto</button>
+            ${hasPhoto ? '<button id="btnGPhotoDel" class="f-btn reject">Quitar foto</button>' : ''}
+          </div>
+        </div>
         <h3>${esc(g.name)}</h3>
         <p>${members.length} miembro${members.length !== 1 ? 's' : ''} · creado por @${esc(g.creator)} · toca uno para ver su perfil</p>
         <div class="grp-list">
@@ -227,6 +327,17 @@ const Groups = {
       </div>`;
     root.hidden = false;
     root.onclick = (e) => {
+      const photo = e.target.closest('#btnGPhoto');
+      if (photo) {
+        const inp = $('#gPhotoInput');
+        if (inp) { inp.dataset.gid = gid; inp.click(); }
+        return;
+      }
+      if (e.target.closest('#btnGPhotoDel')) {
+        this.closeModal();
+        this.removePhoto(gid);
+        return;
+      }
       const mem = e.target.closest('.grp-member');
       if (mem && mem.dataset.muid) {
         ProfileCard.open(mem.dataset.muid);

@@ -16,6 +16,32 @@
 
 const APP_ICON = './icons/icon-192.png';
 
+/* ¿el chat de esta notificación está silenciado? (lista «muted» en IDB kv,
+   escrita por la página) — el push llega igual pero SIN sonido ni aviso */
+async function isMutedChat(route) {
+  if (!route || !route.chat) return false;
+  try {
+    const db = await new Promise((resolve, reject) => {
+      const r = indexedDB.open('nexo_media', 2);
+      r.onupgradeneeded = () => {
+        if (!r.result.objectStoreNames.contains('blobs')) r.result.createObjectStore('blobs');
+        if (!r.result.objectStoreNames.contains('kv')) r.result.createObjectStore('kv');
+      };
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      setTimeout(() => reject(new Error('idb timeout')), 1500);
+    });
+    const val = await new Promise((resolve) => {
+      try {
+        const q = db.transaction('kv', 'readonly').objectStore('kv').get('muted');
+        q.onsuccess = () => resolve(q.result);
+        q.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    });
+    return Array.isArray(val) && val.includes(route.chat);
+  } catch (e) { return false; }
+}
+
 self.addEventListener('install', (e) => { self.skipWaiting(); });
 self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });
 
@@ -50,14 +76,16 @@ self.addEventListener('push', (event) => {
       });
     }
 
-    /* pestaña oculta o app cerrada → notificación completa */
+    /* pestaña oculta o app cerrada → notificación completa
+       (SILENCIADA si el chat está silenciado en este dispositivo) */
+    const muted = await isMutedChat(route);
     return self.registration.showNotification(title, {
       body: data.body || '',
       icon: APP_ICON,
       badge: APP_ICON,
       tag,
-      renotify: true,
-      silent: false,
+      renotify: !muted,
+      silent: muted, /* chat silenciado: entra al cajón sin sonar */
       data: { route }
     });
   })());

@@ -114,13 +114,13 @@ const Stickers = {
     if (!blob) { UI.toast('El sticker no está disponible.'); return; }
     try {
       const b64 = await blobToB64(blob);
-      await Chat.sendChunked(Chat.active, {
+      const m = await Chat.sendChunked(Chat.active, {
         b64, msgT: 'stk',
         meta: { w: s.w, h: s.h, mime: s.mime || blob.type || 'image/webp' },
         blobType: s.mime || blob.type || 'image/webp'
       });
       App.renderConvoList();
-      Chat.afterSend(Chat.active, { t: 'stk' });
+      Chat.afterSend(Chat.active, m);
       this.closePicker();
     } catch (e) {
       console.warn('sendSticker', e);

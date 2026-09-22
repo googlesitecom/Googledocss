@@ -54,7 +54,9 @@ const Notify = {
   /* ===================== eventos que generan notificaciones ===================== */
 
   /* Mensaje entrante (texto, imagen o voz). res = resultado de Spam.check.
-     chatKey = uid amigo o 'g:<gid>'; en grupos m.gname lleva el nombre. */
+     chatKey = uid amigo o 'g:<gid>'; en grupos m.gname lleva el nombre.
+     CHAT SILENCIADO: sin sonido, sin toast, sin notificación del navegador
+     y sin badge — el mensaje simplemente aparece en la conversación. */
   onIncomingMessage(chatKey, m, res, fromUid) {
     /* ---- PUERTA ANTI-SPAM: cero notificaciones ---- */
     if (res && res.isSpam && Settings.spam) {
@@ -66,6 +68,13 @@ const Notify = {
 
     const viewing = Chat.active === chatKey && !document.hidden;
     if (viewing) return;
+
+    /* ---- chat silenciado: entrega silenciosa total ---- */
+    if (Chat.isMuted && Chat.isMuted(chatKey)) {
+      App.renderConvoList();
+      App.updateTitle();
+      return;
+    }
 
     const fromName = m.gname ? `${m.name || fromUid || ''} · ${m.gname}` : (m.name || chatKey);
     const preview = m.t === 'img' ? '· Imagen ·' : m.t === 'voice' ? '· Mensaje de voz ·' : m.t === 'stk' ? '· Sticker ·' : truncate(m.text, 70);

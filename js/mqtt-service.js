@@ -29,6 +29,11 @@ const T = {
   ginv: (u, gid) => `${NS}/ginv/${u}/${gid}`,
   /* estado RETENIDO de la llamada de grupo en curso (unirse tarde) */
   gcall: (gid) => `${NS}/gcall/${gid}`,
+  /* REACCIONES con emoji: retenidas por mensaje (expiran a los 7 días)
+     - DM: rx/<destinatario>/<autor de la reacción>/<id de mensaje>
+     - Grupo: grx/<gid>/<autor de la reacción>/<id de mensaje>          */
+  rx: (to, from, id) => `${NS}/rx/${to}/${from}/${id}`,
+  grx: (gid, from, id) => `${NS}/grx/${gid}/${from}/${id}`,
   /* suscripción web push de cada usuario (notificaciones sin abrir la app) */
   psub: (u) => `${NS}/psub/${u}`
 };

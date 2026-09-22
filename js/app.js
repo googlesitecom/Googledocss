@@ -3,7 +3,8 @@
 
 /* Preferencias globales (persistidas) */
 const Settings = Object.assign(
-  { sound: true, browser: true, spam: true, sens: 'medio', theme: null, accentH: null, wp: 'none' },
+  { sound: true, browser: true, spam: true, sens: 'medio', theme: null, accentH: null, wp: 'none',
+    volume: 0.8, vibrate: true, muted: {}, pinned: {}, focus: false },
   LS.get(K.prefs, {})
 );
 function saveSettings() { LS.set(K.prefs, Settings); }
@@ -40,6 +41,8 @@ const App = {
   showApp() {
     $('#authScreen').hidden = true;
     $('#appScreen').hidden = false;
+    this.setFocus(Settings.focus);
+    Chat.syncMuted(); /* lista de silenciados para el Service Worker */
     this.showView('chats');
     this.renderAll();
     this.updateTitle();
@@ -84,6 +87,17 @@ const App = {
   },
   setChatOpen(on) { document.body.classList.toggle('chat-open', on); },
 
+  /* ================== MODO ENFOQUE: ocultar la barra lateral ==================
+     Solo queda el chat (o el juego) a pantalla completa. Se restaura con
+     el botón flotante que aparece arriba a la izquierda.                    */
+  setFocus(on) {
+    Settings.focus = !!on;
+    saveSettings();
+    document.body.classList.toggle('focus', !!on);
+    const btn = $('#focusRestore');
+    if (btn) btn.hidden = !on;
+  },
+
   /* ================== estado de conexión ================== */
   setConn(s) {
     const el = $('#connStatus');
@@ -108,11 +122,16 @@ const App = {
     const list = $('#convoList');
     if (!list) return;
 
-    /* DM de amigos + grupos, ordenados por última actividad */
+    /* DM de amigos + grupos: FIJADOS arriba y luego por última actividad */
     const items = [
       ...Friends.all().map((f) => ({ key: f.uid, group: null })),
       ...Groups.all().map((g) => ({ key: 'g:' + g.id, group: g }))
-    ].sort((a, b) => Chat.lastActivity(b.key) - Chat.lastActivity(a.key));
+    ].sort((a, b) => {
+      const pa = Chat.isPinned(a.key) ? 1 : 0;
+      const pb = Chat.isPinned(b.key) ? 1 : 0;
+      if (pa !== pb) return pb - pa;
+      return Chat.lastActivity(b.key) - Chat.lastActivity(a.key);
+    });
 
     if (!items.length) {
       list.innerHTML = `<div class="f-empty">Sin conversaciones todavía.<br>Añade amigos desde la pestaña <strong>Amigos</strong> o crea un <strong>grupo</strong>.</div>`;
@@ -121,6 +140,8 @@ const App = {
     list.innerHTML = items.map(({ key, group }) => {
       const last = Chat.lastMsg(key);
       const name = group ? group.name : Friends.name(key);
+      const pinned = Chat.isPinned(key);
+      const muted = Chat.isMuted(key);
       /* ¿hay una llamada de grupo EN CURSO en la que no estoy? */
       const og = (group && typeof Calls !== 'undefined' && Calls.ongoingInfo)
         ? Calls.ongoingInfo(group.id) : null;
@@ -130,22 +151,24 @@ const App = {
       if (og && !inThis) prev = 'Llamada en curso · toca para unirte';
       else if (inThis) prev = 'Estás en la llamada';
       else if (last) prev = (last.mine ? 'Tú: ' : (group ? (last.name || '') + ': ' : '')) +
-        (last.t === 'img' ? '· Imagen ·' : last.t === 'voice' ? '· Mensaje de voz ·' : last.t === 'stk' ? '· Sticker ·' : truncate(last.text, group ? 34 : 42));
+        (last.deleted ? '· Mensaje eliminado ·' : last.t === 'img' ? '· Imagen ·' : last.t === 'voice' ? '· Mensaje de voz ·' : last.t === 'stk' ? '· Sticker ·' : truncate(last.text, group ? 34 : 42));
       const un = Chat.unread(key);
       const active = Chat.active === key && this.view === 'chats';
       const avInner = group
-        ? `<span class="g-mark"><svg class="icon"><use href="#i-users"/></svg></span>`
+        ? GroupAvatars.html(group.id)
         : Avatars.html(key, name);
       const dot = group
         ? `<span class="pres-dot ${Groups.onlineCount(group.id) ? 'on' : ''}" title="grupo"></span>`
         : `<span class="pres-dot ${Presence.isOnline(key) ? 'on' : ''}" title="${Presence.status(key)}"></span>`;
+      const tags = `${pinned ? `<span class="convo-tag pin" title="Chat fijado"><svg class="icon"><use href="#i-pin"/></svg></span>` : ''}${muted ? `<span class="convo-tag mute" title="Silenciado"><svg class="icon"><use href="#i-bell-off"/></svg></span>` : ''}`;
       return `<button class="convo ${active ? 'active' : ''} ${group ? 'is-group' : ''} ${og && !inThis ? 'has-call' : ''}" data-key="${esc(key)}">
         <div class="avatar" style="--h:${hueOf(group ? group.id : key)}">${avInner}</div>
         <div class="convo-main">
-          <div class="convo-top"><strong>${esc(name)}</strong><span class="convo-time">${last ? fmtDay(last.ts) : ''}</span></div>
+          <div class="convo-top"><strong>${esc(name)}</strong><span class="convo-tag">${tags}</span><span class="convo-time">${last ? fmtDay(last.ts) : ''}</span></div>
           <div class="convo-bot"><span class="convo-prev">${og && !inThis ? `<svg class="ic-mini"><use href="#i-phone"/></svg> ` : ''}${esc(prev)}</span>${un ? `<span class="unread">${un > 99 ? '99+' : un}</span>` : ''}</div>
         </div>
         ${dot}
+        <span class="convo-more" data-ckey="${esc(key)}" title="Opciones del chat" role="button" tabindex="0"><svg class="icon"><use href="#i-more"/></svg></span>
       </button>`;
     }).join('');
   },
@@ -277,6 +300,20 @@ const App = {
       </div>
 
       <div class="set-card">
+        <h3><svg class="icon"><use href="#i-vibrate"/></svg>Sonido y vibración</h3>
+        <p class="desc">Efectos de toda la app: mensajes, reacciones, llamadas y avisos.</p>
+        <div class="vol-row">
+          <div class="lbl"><strong>Volumen de efectos</strong><span id="volVal">${Math.round((Settings.volume != null ? Settings.volume : 0.8) * 100)}%</span></div>
+          <input type="range" id="setVolume" min="0" max="100" step="5" value="${Math.round((Settings.volume != null ? Settings.volume : 0.8) * 100)}" aria-label="Volumen de efectos">
+        </div>
+        <div class="set-row">
+          <div class="lbl"><strong>Vibración</strong><span>Aviso con vibración en móvil (si lo soporta)</span></div>
+          <label class="sw"><input type="checkbox" data-set="vibrate" ${Settings.vibrate ? 'checked' : ''}><i></i></label>
+        </div>
+        <button id="btnTestSound" class="f-btn chat" style="width:100%;justify-content:center;margin-top:10px">Probar efectos de sonido</button>
+      </div>
+
+      <div class="set-card">
         <h3><svg class="icon"><use href="#i-shield"/></svg>Filtro anti-spam</h3>
         <p class="desc">Los mensajes detectados como spam se entregan marcados en el chat, pero <strong>no generan notificaciones</strong>: ni sonido, ni aviso, ni badge, ni push.</p>
         <div class="set-row">
@@ -327,6 +364,11 @@ const App = {
     if (kind === 'dm' && p[3] === Auth.me.uid) Chat.handleIncoming(p[4], p.slice(5), m);
     else if (kind === 'gm') Chat.handleGroupIncoming(p[3], p[4], p.slice(5), m);
     else if (kind === 'gcall') { if (typeof Calls !== 'undefined') Calls.onCallState(p[3], m); }
+    /* reacciones con emoji (retenidas por mensaje) */
+    else if (kind === 'rx' && p[3] === Auth.me.uid) Chat.handleReaction(p[4], p[5], m, topic);
+    else if (kind === 'grx') Chat.handleReaction('g:' + p[3], p[5], m, topic);
+    /* descriptor de grupo (nombre, miembros, FOTO) en vivo */
+    else if (kind === 'group') { if (typeof Groups !== 'undefined') Groups.onDescriptor(p[3], m); }
     else if (kind === 'ginv' && p[3] === Auth.me.uid) Groups.onInvite(p[4], m);
     else if (kind === 'freq' && p[3] === Auth.me.uid) Friends.handleRequest(p[4], m);
     else if (kind === 'fresp' && p[3] === Auth.me.uid) Friends.handleResponse(p[4], m);
@@ -467,10 +509,19 @@ const App = {
       }
     });
 
-    /* lista de conversaciones (DM + grupos) */
+    /* lista de conversaciones (DM + grupos): abrir u opciones */
     $('#convoList').addEventListener('click', (e) => {
+      if (Date.now() - (window.__lpAt || 0) < 500) return; /* tras pulsación larga */
+      const more = e.target.closest('.convo-more');
+      if (more) { e.stopPropagation(); ConvoMenu.open(more.dataset.ckey, more); return; }
       const b = e.target.closest('.convo');
       if (b) App.openChat(b.dataset.key);
+    });
+    $('#convoList').addEventListener('contextmenu', (e) => {
+      const c = e.target.closest('.convo');
+      if (!c) return;
+      e.preventDefault();
+      ConvoMenu.open(c.dataset.key, c);
     });
 
     /* crear grupo */
@@ -521,6 +572,59 @@ const App = {
     /* chat */
     $('#btnBack').addEventListener('click', () => Chat.close());
     $('#btnSend').addEventListener('click', () => Chat.sendText());
+
+    /* MODO ENFOQUE: ocultar la barra lateral (solo chat/juego) */
+    $('#btnFocus') && $('#btnFocus').addEventListener('click', () => App.setFocus(true));
+    $('#gsFocus') && $('#gsFocus').addEventListener('click', () => App.setFocus(true));
+    $('#focusRestore') && $('#focusRestore').addEventListener('click', () => App.setFocus(false));
+
+    /* buscar dentro del chat */
+    $('#btnSearchChat') && $('#btnSearchChat').addEventListener('click', () => Chat.toggleSearch());
+    $('#chatSearchClose') && $('#chatSearchClose').addEventListener('click', () => Chat.closeSearch());
+    const searchTimer = { t: null };
+    $('#chatSearchInput') && $('#chatSearchInput').addEventListener('input', (e) => {
+      clearTimeout(searchTimer.t);
+      const v = e.target.value;
+      searchTimer.t = setTimeout(() => Chat.runSearch(v), 170);
+    });
+
+    /* responder: cancelar la vista previa */
+    $('#replyCancel') && $('#replyCancel').addEventListener('click', () => Chat.clearReply());
+
+    /* selector de emojis */
+    $('#btnEmoji') && $('#btnEmoji').addEventListener('click', () => Emoji.togglePanel());
+    $('#emojiClose') && $('#emojiClose').addEventListener('click', () => Emoji.closePanel());
+    $('#emojiPanel') && $('#emojiPanel').addEventListener('click', (e) => {
+      const tab = e.target.closest('.emoji-tab');
+      if (tab) { Emoji.setTab(tab.dataset.cat); return; }
+      const cell = e.target.closest('.emoji-cell');
+      if (cell && cell.dataset.emoji) Emoji.insert(cell.dataset.emoji);
+    });
+
+    /* FOTO DEL GRUPO (input estático del panel) */
+    $('#gPhotoInput') && $('#gPhotoInput').addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      const gid = e.target.dataset.gid;
+      e.target.value = '';
+      if (!f || !gid) return;
+      try { await Groups.setPhoto(gid, f); } catch (ex) { UI.toast(ex.message || 'No se pudo cambiar la foto del grupo.'); }
+    });
+
+    /* menú contextual compartido (#ctxMenu) */
+    $('#ctxMenu') && $('#ctxMenu').addEventListener('click', (e) => {
+      const rx = e.target.closest('.ctx-rx');
+      if (rx) { MsgMenu.act(null, rx.dataset.mrx); return; }
+      const it = e.target.closest('[data-mact]');
+      if (it) { MsgMenu.act(it.dataset.mact, null); return; }
+      const ci = e.target.closest('[data-cact]');
+      if (ci) ConvoMenu.act(ci.dataset.cact);
+    });
+    document.addEventListener('click', (e) => {
+      if (Date.now() - (window.__lpAt || 0) < 500) return; /* no cerrar tras pulsación larga */
+      const menu = $('#ctxMenu');
+      if (menu && !menu.hidden && !e.target.closest('#ctxMenu')) { MsgMenu.close(); ConvoMenu.close(); }
+    });
+
     const inp = $('#msgInput');
     inp.addEventListener('input', () => {
       inp.style.height = 'auto';
@@ -543,7 +647,7 @@ const App = {
     $('#recSend').addEventListener('click', () => Voice.stop(true));
 
     /* stickers: selector, añadir y pestañas */
-    $('#btnSticker').addEventListener('click', () => Stickers.togglePicker());
+    $('#btnSticker').addEventListener('click', () => { if (typeof Emoji !== 'undefined' && Emoji.closePanel) Emoji.closePanel(); Stickers.togglePicker(); });
     $('#stkClose').addEventListener('click', () => Stickers.closePicker());
     $('#stkPanel').addEventListener('click', (e) => {
       const tab = e.target.closest('.stk-tab');
@@ -557,8 +661,22 @@ const App = {
       if (files.length) Stickers.addFiles(files);
     });
 
-    /* al hacer clic en los mensajes: stickers, media, voz y PERFILES */
+    /* al hacer clic en los mensajes: menú, citas, reacciones, stickers, media, voz y PERFILES */
     $('#messages').addEventListener('click', (e) => {
+      if (Date.now() - (window.__lpAt || 0) < 500) return; /* tras pulsación larga */
+      /* botón ⋮ → menú del mensaje (responder / reaccionar / eliminar…) */
+      const more = e.target.closest('.msg-more');
+      if (more && more.dataset.more) { e.stopPropagation(); MsgMenu.open(Chat.active, more.dataset.more, more); return; }
+      /* cita → saltar al mensaje original */
+      const quote = e.target.closest('.quote');
+      if (quote && quote.dataset.reid) { Chat.jumpTo(quote.dataset.reid); return; }
+      /* chip de reacción → poner/quitar mi reacción con ese emoji */
+      const chip = e.target.closest('.rx-chip');
+      if (chip) {
+        const row = chip.closest('.msg-row');
+        if (row && row.dataset.mid) Chat.react(Chat.active, row.dataset.mid, chip.dataset.rx);
+        return;
+      }
       /* avatar o nombre del autor (grupos) → ver su perfil */
       const pu = e.target.closest('[data-puid]');
       if (pu && pu.dataset.puid) { ProfileCard.open(pu.dataset.puid); return; }
@@ -578,7 +696,22 @@ const App = {
       const spd = e.target.closest('.v-speed');
       if (spd) Chat.cycleVoiceSpeed(spd.dataset.vid, spd);
       if (!$('#stkPanel').hidden) Stickers.closePicker();
+      if ($('#emojiPanel') && !$('#emojiPanel').hidden) Emoji.closePanel();
     });
+
+    /* clic derecho sobre un mensaje → menú completo (estilo WhatsApp Web) */
+    $('#messages').addEventListener('contextmenu', (e) => {
+      const row = e.target.closest('.msg-row');
+      if (!row || !row.dataset.mid) return;
+      e.preventDefault();
+      MsgMenu.open(Chat.active, row.dataset.mid, row);
+    });
+
+    /* pulsación larga (táctil) → menú de mensaje o de conversación */
+    this._armLongPress($('#messages'), '.msg-row', (row) => {
+      if (row.dataset.mid) MsgMenu.open(Chat.active, row.dataset.mid, row);
+    });
+    this._armLongPress($('#convoList'), '.convo', (c) => ConvoMenu.open(c.dataset.key, c));
 
     /* llamadas (1:1 y grupo) */
     $('#btnCallAudio').addEventListener('click', () => Chat.active && !String(Chat.active).startsWith('g:') && Calls.start(Chat.active, false));
@@ -649,6 +782,13 @@ const App = {
         saveSettings();
         Theme.apply();
       }
+      if (e.target.id === 'setVolume') {
+        const pct = parseInt(e.target.value, 10) || 0;
+        Settings.volume = pct / 100;
+        saveSettings();
+        const lbl = $('#volVal');
+        if (lbl) lbl.textContent = pct + '%';
+      }
     });
     $('#viewSettings').addEventListener('click', async (e) => {
       const btn = e.target.closest('button');
@@ -702,6 +842,16 @@ const App = {
           UI.toast('Push real enviado: debería aparecer aunque cierres Nexo.');
         }
         if (Settings.sound) Sound.msg();
+      } else if (btn.id === 'btnTestSound') {
+        /* pequeña demo del banco de sonidos v6 */
+        if (Settings.sound) {
+          Sound.send();
+          setTimeout(() => Sound.msg(), 420);
+          setTimeout(() => Sound.react(), 900);
+          setTimeout(() => Sound.chime(), 1400);
+          setTimeout(() => Sound.connect(), 2100);
+          setTimeout(() => Sound.hangup(), 2900);
+        } else UI.toast('Activa «Sonidos» para oír la demo.');
       } else if (btn.id === 'btnAccReset') {
         Theme.resetAccent();
         App.renderSettings();
@@ -747,6 +897,32 @@ const App = {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && Auth.me && Chat.active) Chat.clearUnread(Chat.active);
     });
+  },
+
+  /* pulsación larga (táctil) → menú contextual, sin interferir con el scroll */
+  _armLongPress(container, selector, open) {
+    if (!container) return;
+    let timer = null;
+    const pos = { x: 0, y: 0 };
+    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    container.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return; /* escritorio: ⋮ o clic derecho */
+      const target = e.target.closest(selector);
+      if (!target) return;
+      pos.x = e.clientX; pos.y = e.clientY;
+      cancel();
+      timer = setTimeout(() => {
+        timer = null;
+        try { if (navigator.vibrate) navigator.vibrate(12); } catch (err) {}
+        open(target);
+      }, 470);
+    });
+    container.addEventListener('pointermove', (e) => {
+      if (timer && (Math.abs(e.clientX - pos.x) > 10 || Math.abs(e.clientY - pos.y) > 10)) cancel();
+    });
+    container.addEventListener('pointerup', cancel);
+    container.addEventListener('pointercancel', cancel);
+    container.addEventListener('scroll', cancel, { capture: true, passive: true });
   },
 
   async doSearch() {

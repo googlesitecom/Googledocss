@@ -3,6 +3,13 @@
    - Imágenes y MENSAJES DE VOZ: compresión + transferencia por chunks + IndexedDB
    - Grupos: mismos mecanismos sobre nexo/v1/gm/<gid>/<autor>/<id>
    - Acuses de recibo (✓✓) en DM, indicador de escritura, historial local
+   - v6 FUNCIONES WHATSAPP: responder (citas), reacciones con emoji,
+     eliminar para todos, copiar, reenviar, silenciar chats, fijar chats,
+     buscar dentro del chat y menú contextual (clic ⋮ / clic derecho /
+     pulsación larga)
+   - RETENCIÓN DE GRUPO: los mensajes de grupo NUNCA se borran del broker
+     al recibirlos (solo expiran a los 7 días): con varios miembros,
+     el primero en conectarse ya no roba la copia retenida al resto.
    - PUSH: si el destinatario está desconectado, su navegador recibe una
      notificación Web Push aunque la app esté cerrada (ver push.js);
      el spam detectado en origen NO genera push.                          */
@@ -37,6 +44,105 @@ async function compressImage(file, maxDim = 1280, q = 0.78) {
   return { b64: dataURL.split(',')[1], w, h };
 }
 
+/* ---- chips de reacción (agregados por emoji, el propio resaltado) ---- */
+function rxChipsHTML(m) {
+  const rx = m.rx || {};
+  const keys = Object.keys(rx);
+  if (!keys.length) return '';
+  const agg = {};
+  keys.forEach((u) => { agg[rx[u]] = (agg[rx[u]] || 0) + 1; });
+  const mine = rx[Auth.me.uid];
+  return `<div class="rx-row">${Object.entries(agg).map(([e, n]) => `
+    <button class="rx-chip ${mine === e ? 'mine' : ''}" data-rx="${esc(e)}" title="${mine === e ? 'Quitar tu reacción' : 'Reaccionar con ' + esc(e)}">${e}${n > 1 ? `<b>${n}</b>` : ''}</button>`).join('')}</div>`;
+}
+
+/* ---- posición del menú contextual junto a su ancla ---- */
+function positionCtxMenu(menu, anchor) {
+  menu.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let x = r.left + (r.width / 2) - (mw / 2);
+  x = Math.max(10, Math.min(x, window.innerWidth - mw - 10));
+  let y = r.bottom + 6;
+  if (y + mh > window.innerHeight - 10) y = Math.max(10, r.top - mh - 6);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+}
+
+/* ---- menú contextual de MENSAJE (estilo WhatsApp Web) ---- */
+const MsgMenu = {
+  key: null, mid: null,
+  EMOJIS: ['❤️', '😂', '👍', '😮', '😢', '🙏', '🔥'],
+  open(key, mid, anchor) {
+    if (!key || !mid || !Auth.me) return;
+    const m = (Chat.hist(key) || []).find((x) => x.id === mid);
+    if (!m) return;
+    this.key = key; this.mid = mid;
+    window.__lpAt = Date.now(); /* suprimir el clic posterior a la pulsación larga */
+    const menu = $('#ctxMenu');
+    const myRx = m.rx && m.rx[Auth.me.uid];
+    const rxEls = this.EMOJIS.map((e) =>
+      `<button class="ctx-rx ${myRx === e ? 'sel' : ''}" data-mrx="${esc(e)}" title="${esc(e)}">${e}</button>`).join('')
+      + (myRx ? `<button class="ctx-rx" data-mrx="" title="Quitar mi reacción">✖️</button>` : '');
+    let items = `<button class="ctx-item" data-mact="reply"><svg class="icon"><use href="#i-reply"/></svg>Responder</button>`;
+    if (m.t === 'msg' && !m.deleted) items += `
+      <button class="ctx-item" data-mact="copy"><svg class="icon"><use href="#i-copy"/></svg>Copiar texto</button>
+      <button class="ctx-item" data-mact="fwd"><svg class="icon"><use href="#i-forward"/></svg>Reenviar</button>`;
+    if (m.mine && !m.deleted) items += `
+      <button class="ctx-item danger" data-mact="del"><svg class="icon"><use href="#i-trash"/></svg>Eliminar para todos</button>`;
+    menu.innerHTML = `<div class="ctx-reactions">${rxEls}</div><div id="ctxItems">${items}</div>`;
+    positionCtxMenu(menu, anchor);
+  },
+  close() {
+    const menu = $('#ctxMenu');
+    if (menu) { menu.hidden = true; menu.innerHTML = ''; menu.style.left = menu.style.top = ''; }
+    this.key = this.mid = null;
+  },
+  act(action, emoji) {
+    if (!this.key || !this.mid) return;
+    const m = (Chat.hist(this.key) || []).find((x) => x.id === this.mid);
+    if (!m) { this.close(); return; }
+    if (emoji != null) Chat.react(this.key, this.mid, emoji);
+    else if (action === 'reply') Chat.setReply(m);
+    else if (action === 'copy') Chat.copyText(m);
+    else if (action === 'fwd') Chat.openForward(m);
+    else if (action === 'del') Chat.deleteMsg(this.key, m);
+    this.close();
+  }
+};
+
+/* ---- menú contextual de CONVERSACIÓN (fijar / silenciar / perfil) ---- */
+const ConvoMenu = {
+  key: null,
+  open(key, anchor) {
+    if (!key || !Auth.me) return;
+    this.key = key;
+    window.__lpAt = Date.now();
+    const menu = $('#ctxMenu');
+    const pinned = Chat.isPinned(key);
+    const muted = Chat.isMuted(key);
+    const isGroup = String(key).startsWith('g:');
+    menu.innerHTML = `<div id="ctxItems" style="padding:2px">
+      <button class="ctx-item" data-cact="pin"><svg class="icon"><use href="#i-pin"/></svg>${pinned ? 'Desfijar chat' : 'Fijar chat'}</button>
+      <button class="ctx-item" data-cact="mute"><svg class="icon"><use href="#i-${muted ? 'bell' : 'bell-off'}"/></svg>${muted ? 'Reactivar notificaciones' : 'Silenciar notificaciones'}</button>
+      ${isGroup ? '' : `<button class="ctx-item" data-cact="profile"><svg class="icon"><use href="#i-users"/></svg>Ver perfil</button>`}
+    </div>`;
+    positionCtxMenu(menu, anchor);
+  },
+  close() {
+    const menu = $('#ctxMenu');
+    if (menu) { menu.hidden = true; menu.innerHTML = ''; }
+    this.key = null;
+  },
+  act(act) {
+    if (!this.key) return;
+    if (act === 'pin') Chat.togglePin(this.key);
+    else if (act === 'mute') Chat.toggleMute(this.key);
+    else if (act === 'profile') ProfileCard.open(this.key);
+    this.close();
+  }
+};
+
 const Chat = {
   active: null,      /* uid amigo | 'g:<gid>' grupo */
   _cache: {},        /* chatKey -> [mensajes] */
@@ -46,6 +152,7 @@ const Chat = {
   _objUrls: {},
   _voice: {},        /* msgId -> {audio, btn, wave, durEl} */
   _pushPending: new Map(), /* msgId -> {targets:Set<uid>, title, body, route, timer} */
+  _replyTo: null,    /* mensaje al que se está respondiendo */
 
   /* ================= tipo de chat ================= */
   kind(key) {
@@ -102,6 +209,31 @@ const Chat = {
     App.updateTitle();
   },
 
+  /* ================= silenciar / fijar ================= */
+  isMuted(key) { return !!(Settings.muted && Settings.muted[key]); },
+  toggleMute(key) {
+    Settings.muted = Settings.muted || {};
+    if (Settings.muted[key]) delete Settings.muted[key];
+    else Settings.muted[key] = true;
+    saveSettings();
+    this.syncMuted();
+    App.renderConvoList();
+    UI.toast(this.isMuted(key)
+      ? 'Chat silenciado: sin sonidos ni notificaciones (los mensajes siguen llegando).'
+      : 'Notificaciones reactivadas.');
+  },
+  syncMuted() {
+    try { IDB.kvSet('muted', Object.keys(Settings.muted || {})); } catch (e) {}
+  },
+  isPinned(key) { return !!(Settings.pinned && Settings.pinned[key]); },
+  togglePin(key) {
+    Settings.pinned = Settings.pinned || {};
+    if (Settings.pinned[key]) delete Settings.pinned[key];
+    else Settings.pinned[key] = true;
+    saveSettings();
+    App.renderConvoList();
+  },
+
   /* ================= abrir / cerrar ================= */
   open(key) {
     this.active = key;
@@ -109,6 +241,9 @@ const Chat = {
     $('#chatView').hidden = false;
     $('#emptyState').hidden = true;
     if (typeof Stickers !== 'undefined' && Stickers.closePicker) Stickers.closePicker();
+    if (typeof Emoji !== 'undefined' && Emoji.closePanel) Emoji.closePanel();
+    this.clearReply();
+    this.closeSearch();
     this.renderHeaderInfo(key);
     this.renderMessages(key);
     this.clearUnread(key);
@@ -131,7 +266,7 @@ const Chat = {
     const av = $('#chatAvatar');
     $('#chatView').dataset.chatType = k.type;
     if (k.type === 'group') {
-      av.innerHTML = `<span class="g-mark"><svg class="icon"><use href="#i-users"/></svg></span>`;
+      av.innerHTML = GroupAvatars.html(k.gid);
       avatarStyle(av, k.gid);
       $('#chatName').textContent = (k.group && k.group.name) || 'Grupo';
       const n = k.group ? k.group.members.length : 0;
@@ -169,31 +304,298 @@ const Chat = {
     return k.type === 'group' ? T.gsys(k.gid, Auth.me.uid) : T.evt(key);
   },
 
+  previewOf(m) {
+    if (!m) return '';
+    if (m.deleted) return 'Mensaje eliminado';
+    if (m.t === 'img') return 'Imagen';
+    if (m.t === 'voice') return 'Mensaje de voz';
+    if (m.t === 'stk') return 'Sticker';
+    return truncate(m.text, 64);
+  },
+
   sendText() {
     const inp = $('#msgInput');
     const text = (inp.value || '').replace(/\s+$/, '');
     if (!text.trim() || !this.active) return;
     const key = this.active;
-    const id = rid();
-    const ts = Date.now();
-
-    const ok = Mqtt.publish(
-      this.msgTopic(key, id),
-      { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts },
-      { retain: true, expiry: 604800 }
-    );
-    if (!ok) { UI.toast('Sin conexión: el mensaje no se envió.'); return; }
-
-    const m = { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts, mine: true };
-    this.addHist(key, m);
-    this.appendBubble(key, m);
-    inp.value = '';
-    inp.style.height = 'auto';
-    App.renderConvoList();
-    this.afterSend(key, m);
+    const re = this._replyTo ? { ...this._replyTo } : undefined;
+    const sent = this._sendTextTo(key, text, { re });
+    if (sent) {
+      inp.value = '';
+      inp.style.height = 'auto';
+      this.clearReply();
+    }
   },
 
-  /* push a quien no pueda ver el mensaje + anti-spam en origen
+  _sendTextTo(key, text, { re, fwd } = {}) {
+    const id = rid();
+    const ts = Date.now();
+    const payload = { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts };
+    if (re) payload.re = re;
+    if (fwd) payload.fwd = true;
+    const ok = Mqtt.publish(this.msgTopic(key, id), payload, { retain: true, expiry: 604800 });
+    if (!ok) { UI.toast('Sin conexión: el mensaje no se envió.'); return null; }
+    const m = { t: 'msg', id, from: Auth.me.uid, name: Auth.me.name, text, ts, mine: true };
+    if (re) m.re = re;
+    if (fwd) m.fwd = true;
+    this.addHist(key, m);
+    if (this.active === key) this.appendBubble(key, m);
+    App.renderConvoList();
+    this.afterSend(key, m);
+    if (Settings.sound) Sound.send();
+    return m;
+  },
+
+  /* ---------- RESPONDER: barra de vista previa ---------- */
+  setReply(m) {
+    if (!m) return;
+    this._replyTo = {
+      id: m.id,
+      name: m.mine ? Auth.me.name : (m.name || m.from || ''),
+      text: this.previewOf(m)
+    };
+    const bar = $('#replyBar');
+    if (!bar) return;
+    $('#replyName').textContent = 'Respondiendo a ' + this._replyTo.name;
+    $('#replyText').textContent = this._replyTo.text;
+    bar.hidden = false;
+    const inp = $('#msgInput');
+    if (inp && window.innerWidth > 920) inp.focus();
+  },
+  clearReply() {
+    this._replyTo = null;
+    const bar = $('#replyBar');
+    if (bar) bar.hidden = true;
+  },
+
+  /* saltar al mensaje original de una cita */
+  jumpTo(mid) {
+    const row = document.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!row) { UI.toast('El mensaje original ya no está disponible.'); return; }
+    try { row.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { row.scrollIntoView(); }
+    row.classList.remove('msg-flash');
+    void row.offsetWidth;
+    row.classList.add('msg-flash');
+  },
+
+  /* ---------- REACCIONES ---------- */
+  react(key, mid, emoji) {
+    const h = this.hist(key);
+    const msg = h.find((x) => x.id === mid);
+    if (!msg) return;
+    msg.rx = msg.rx || {};
+    const had = msg.rx[Auth.me.uid];
+    if (emoji && had === emoji) emoji = ''; /* mismo emoji → quitar */
+    if (emoji) msg.rx[Auth.me.uid] = emoji;
+    else delete msg.rx[Auth.me.uid];
+    if (msg.rx && !Object.keys(msg.rx).length) delete msg.rx;
+    LS.set(K.hist(Auth.me.uid, key), h);
+    this._refreshRx(key, mid);
+    const k = this.kind(key);
+    const topic = k.type === 'group'
+      ? T.grx(k.gid, Auth.me.uid, mid)
+      : T.rx(key, Auth.me.uid, mid);
+    Mqtt.publish(topic, { t: 'rx', mid, from: Auth.me.uid, name: Auth.me.name, emoji: emoji || '', ts: Date.now() }, { retain: true, expiry: 604800 });
+  },
+
+  /* llega una reacción (tema retenido rx/... DM o grx/... grupo) */
+  handleReaction(chatKey, mid, m, topic) {
+    if (!m || !m.from || !mid || m.from === Auth.me.uid) return;
+    const h = this.hist(chatKey);
+    const msg = h.find((x) => x.id === mid);
+    if (!msg) {
+      /* no lo tengo (historial antiguo/borrado): en DM limpiar el retenido */
+      if (topic && topic.startsWith(`${NS}/rx/`)) this.clearTopic(topic);
+      return;
+    }
+    msg.rx = msg.rx || {};
+    if (m.emoji) msg.rx[m.from] = m.emoji;
+    else delete msg.rx[m.from];
+    if (!Object.keys(msg.rx).length) delete msg.rx;
+    LS.set(K.hist(Auth.me.uid, chatKey), h);
+    this._refreshRx(chatKey, mid);
+    /* en DM: limpiar el retenido (yo soy el único destinatario);
+       en grupo NO: los miembros desconectados aún deben recibirlo */
+    if (topic && topic.startsWith(`${NS}/rx/`)) this.clearTopic(topic);
+    if (msg.mine && Settings.sound && !this.isMuted(chatKey)) Sound.react();
+  },
+
+  _refreshRx(key, mid) {
+    if (this.active !== key) return;
+    const msg = (this.hist(key) || []).find((x) => x.id === mid);
+    const row = document.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!row || !msg) return;
+    const holder = row.querySelector('.bubble') || row.querySelector('.stk-wrap');
+    if (!holder) return;
+    const existing = holder.querySelector(':scope > .rx-row');
+    const html = rxChipsHTML(msg);
+    if (html) {
+      if (existing) existing.outerHTML = html;
+      else holder.insertAdjacentHTML('beforeend', html);
+    } else if (existing) existing.remove();
+  },
+
+  /* re-render de UNA fila (p. ej. tras eliminar) */
+  _refreshRow(key, mid) {
+    if (this.active !== key) return;
+    const h = this.hist(key);
+    const i = h.findIndex((x) => x.id === mid);
+    if (i < 0) return;
+    const m = h[i];
+    const prev = i > 0 ? h[i - 1] : null;
+    const row = document.querySelector(`[data-mid="${CSS.escape(mid)}"]`);
+    if (!row) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = bubbleHTML(m, prev, key);
+    row.replaceWith(wrap.firstElementChild);
+    this.hydrateMedia($('#messages'));
+  },
+
+  /* ---------- ELIMINAR PARA TODOS ---------- */
+  deleteMsg(key, m) {
+    if (!m || !m.mine || m.deleted) return;
+    const h = this.hist(key);
+    const msg = h.find((x) => x.id === m.id);
+    if (!msg) return;
+    msg.deleted = true;
+    delete msg.text; /* privacidad: no conservar el texto */
+    LS.set(K.hist(Auth.me.uid, key), h);
+    /* publicar la ELIMINACIÓN sobre el tema original del mensaje (retenido):
+       los conectados la aplican al instante y los desconectados, al reconectar */
+    const k = this.kind(key);
+    const topic = k.type === 'group' ? T.gm(k.gid, Auth.me.uid, msg.id) : T.dm(key, Auth.me.uid, msg.id);
+    Mqtt.publish(topic, { t: 'del', id: msg.id, from: Auth.me.uid, ts: Date.now() }, { retain: true, expiry: 604800 });
+    this._refreshRow(key, msg.id);
+    App.renderConvoList();
+    if (Settings.sound) Sound.send();
+  },
+
+  _applyDeleted(chatKey, id) {
+    if (!id) return;
+    const h = this.hist(chatKey);
+    const msg = h.find((x) => x.id === id);
+    if (!msg || msg.deleted) return;
+    msg.deleted = true;
+    delete msg.text;
+    LS.set(K.hist(Auth.me.uid, chatKey), h);
+    this._refreshRow(chatKey, id);
+    App.renderConvoList();
+  },
+
+  /* ---------- COPIAR / REENVIAR ---------- */
+  copyText(m) {
+    if (!m || m.deleted) return;
+    const text = String(m.text || '');
+    const done = () => UI.toast('Texto copiado al portapapeles.');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => this._copyFallback(text, done));
+    } else this._copyFallback(text, done);
+  },
+  _copyFallback(text, done) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      done();
+    } catch (e) { UI.toast('No se pudo copiar el texto.'); }
+  },
+
+  forwardTo(key, m) {
+    if (!m || m.deleted || m.t !== 'msg') return;
+    const sent = this._sendTextTo(key, String(m.text || ''), { fwd: true });
+    if (sent) {
+      const k = this.kind(key);
+      UI.toast(`Reenviado a ${k.type === 'group' ? (k.group && k.group.name) || 'el grupo' : Friends.name(key)}.`);
+    }
+  },
+  openForward(m) {
+    if (!m || m.t !== 'msg' || m.deleted) return;
+    const targets = [
+      ...Friends.all().map((f) => ({ key: f.uid, name: f.name, group: false })),
+      ...Groups.all().map((g) => ({ key: 'g:' + g.id, name: g.name, group: true }))
+    ];
+    if (!targets.length) { UI.toast('No tienes chats a los que reenviar.'); return; }
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="modal group-modal">
+        <h3>Reenviar mensaje</h3>
+        <p>Elige el chat de destino: se enviará marcado como reenviado.</p>
+        <div class="grp-list">
+          ${targets.map((t) => `
+            <button class="grp-pick fwd-to" data-fkey="${esc(t.key)}">
+              <span class="avatar" style="--h:${hueOf(t.group ? t.key.slice(2) : t.key)}">${t.group ? GroupAvatars.html(t.key.slice(2)) : Avatars.html(t.key, t.name)}</span>
+              <span class="g-info"><strong>${esc(t.name)}</strong><span>${t.group ? 'grupo' : '@' + esc(t.key)}</span></span>
+            </button>`).join('')}
+        </div>
+        <div class="m-acts"><button class="btn-ghost" data-r="0">Cancelar</button></div>
+      </div>`;
+    root.hidden = false;
+    root.onclick = (e) => {
+      const t = e.target.closest('.fwd-to');
+      if (t) { this.forwardTo(t.dataset.fkey, m); Groups.closeModal(); return; }
+      if (e.target.closest('[data-r="0"]')) Groups.closeModal();
+    };
+  },
+
+  /* ---------- BUSCAR dentro del chat ---------- */
+  toggleSearch() {
+    const bar = $('#chatSearch');
+    if (!bar || !this.active) return;
+    if (bar.hidden) {
+      bar.hidden = false;
+      const i = $('#chatSearchInput');
+      if (i) i.focus();
+    } else this.closeSearch();
+  },
+  closeSearch() {
+    const bar = $('#chatSearch');
+    if (!bar) return;
+    const wasOpen = !bar.hidden;
+    bar.hidden = true;
+    const i = $('#chatSearchInput');
+    if (i) i.value = '';
+    const c = $('#chatSearchCount');
+    if (c) c.textContent = '';
+    if (wasOpen && this.active) this.renderMessages(this.active);
+  },
+  runSearch(q) {
+    if (!this.active) return;
+    const box = $('#messages');
+    q = String(q || '').trim().toLowerCase();
+    const count = $('#chatSearchCount');
+    if (!q) {
+      if (count) count.textContent = '';
+      this.renderMessages(this.active);
+      return;
+    }
+    const h = this.hist(this.active).filter((m) => !m.deleted && m.t === 'msg' && String(m.text || '').toLowerCase().includes(q));
+    if (count) count.textContent = h.length ? `${h.length} resultado${h.length !== 1 ? 's' : ''}` : 'Sin resultados';
+    if (!h.length) {
+      box.innerHTML = `<div class="f-empty" style="margin:22px auto;max-width:280px">Ningún mensaje de esta conversación coincide con «${esc(q)}».</div>`;
+      return;
+    }
+    const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    box.innerHTML = h.map((m) => {
+      const hl = esc(m.text).replace(rx, (mm) => `<mark>${mm}</mark>`);
+      const isGroup = String(this.active).startsWith('g:');
+      const author = m.mine ? 'Tú' : (m.name || m.from || '');
+      return `<div class="msg-row ${m.mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}" style="max-width:92%">
+        <div class="bubble">
+          ${isGroup && !m.mine ? `<span class="g-sender" style="--sh:${hueOf(m.from || '')}">${esc(author)}</span>` : ''}
+          <p class="msg-text">${hl}</p>
+          <span class="msg-time">${fmtDay(m.ts)}</span>
+        </div>
+      </div>`;
+    }).join('');
+    box.scrollTop = 0;
+  },
+
+  /* ================= push a quien no pueda ver el mensaje + anti-spam en origen
      ----------------------------------------------------------------
      Estrategia "acuse de recibo":
      - Destinatario DESCONECTADO → push inmediato (no va a ack-ear).
@@ -202,7 +604,7 @@ const Chat = {
        → push. Con ack = la app lo recibió y ya avisó por su cuenta
        → nada de spam. El spam detectado en origen nunca genera push.  */
   afterSend(key, m) {
-    const preview = m.t === 'img' ? 'Imagen' : m.t === 'voice' ? 'Mensaje de voz' : m.t === 'stk' ? 'Sticker' : truncate(m.text, 60);
+    const preview = m.fwd ? 'Reenviado: ' + this.previewOf(m) : this.previewOf(m);
     const res = Spam.check('out:' + Auth.me.uid, m.t === 'msg' ? m.text : preview);
     if (res.isSpam && Settings.spam) return; /* spam: sin push */
 
@@ -296,6 +698,8 @@ const Chat = {
   async sendChunked(key, { b64, msgT, meta = {}, blobType = 'image/jpeg' }) {
     const id = rid();
     const ts = Date.now();
+    const re = this._replyTo ? { ...this._replyTo } : undefined;
+    if (re) meta.re = re;
     const n = Math.ceil(b64.length / CHUNK);
     for (let i = 0; i < n; i++) {
       const chunk = {
@@ -310,7 +714,9 @@ const Chat = {
     await IDB.put(id, new Blob([b64ToBlob(b64, blobType)], { type: blobType }));
     const m = { t: msgT, id, from: Auth.me.uid, name: Auth.me.name, ts, mine: true, ...meta };
     this.addHist(key, m);
-    this.appendBubble(key, m);
+    if (this.active === key) this.appendBubble(key, m);
+    if (re) this.clearReply();
+    if (Settings.sound) Sound.send();
     return m;
   },
 
@@ -340,11 +746,20 @@ const Chat = {
         t: 'msg', id, from, name: m.name || from, text: String(m.text || ''), ts: m.ts || Date.now(),
         mine: false, spam: res.isSpam, spamReasons: res.reasons, spamScore: res.score
       };
+      if (m.re) msg.re = m.re;
+      if (m.fwd) msg.fwd = true;
       this.addHist(from, msg);
       this.renderIncoming(from, msg);
       Notify.onIncomingMessage(from, msg, res);
       Mqtt.publish(T.evt(from), { t: 'ack', id, from: Auth.me.uid });
       this.clearTopic(T.dm(Auth.me.uid, from, id));
+    }
+    else if (m.t === 'del') {
+      /* el autor eliminó su mensaje para todos */
+      const id = m.id || rest[0];
+      this._applyDeleted(from, id);
+      this.clearTopic(T.dm(Auth.me.uid, from, id));
+      return;
     }
     else if (m.t === 'imgc') {
       if (rest.length !== 2) return;
@@ -364,25 +779,34 @@ const Chat = {
   handleGroupIncoming(gid, from, rest, m) {
     if (!m || !m.t) return;
     if (m.t === 'gcalle') { if (typeof Calls !== 'undefined') Calls.onGroupEvt(gid, m); return; }
+    if (m.t === 'del') {
+      /* eliminación para todos sobre el tema original (retenido):
+         NO se limpia — los miembros desconectados la recibirán al reconectar */
+      this._applyDeleted('g:' + gid, m.id || rest[0]);
+      return;
+    }
     if (from === Auth.me.uid) return;
     const key = 'g:' + gid;
     if (m.t === 'gtyping') { this.showTyping(key, m.name || from); return; }
     if (m.t === 'msg') {
       if (rest.length !== 1) return;
       const id = rest[0] || m.id;
-      if (this.hasMsg(key, id)) { this.clearTopic(T.gm(gid, from, id)); return; }
+      if (this.hasMsg(key, id)) return; /* dedup (retenido re-entregado) */
 
       const res = Spam.check(from, m.text, m.ts || Date.now());
       const msg = {
         t: 'msg', id, from, name: m.name || from, gname: Groups.name(gid), text: String(m.text || ''),
         ts: m.ts || Date.now(), mine: false, spam: res.isSpam, spamReasons: res.reasons, spamScore: res.score
       };
+      if (m.re) msg.re = m.re;
+      if (m.fwd) msg.fwd = true;
       this.addHist(key, msg);
       this.renderIncoming(key, msg);
       Notify.onIncomingMessage(key, msg, res, from);
       /* ack al autor para su push diferido (y estadística futura) */
       Mqtt.publish(T.evt(from), { t: 'gack', gid, id, from: Auth.me.uid });
-      this.clearTopic(T.gm(gid, from, id));
+      /* RETENCIÓN: en grupos NO se limpia el tema del mensaje — con
+         varios miembros, limpiar robaría la copia al que esté offline */
     }
     else if (m.t === 'imgc' || m.t === 'voic' || m.t === 'stkc') {
       if (rest.length !== 2) return;
@@ -394,14 +818,19 @@ const Chat = {
   onChunk(key, from, id, i, m, kindT) {
     let buf = this._chunkBuf[id];
     if (!buf) {
-      if (this.hasMsg(key, id)) { this.clearTopic(this.chunkTopicOf(key, from, id, i)); return; }
+      if (this.hasMsg(key, id)) {
+        /* ya ensamblado (re-entrega retenida) */
+        const k = this.kind(key);
+        if (k.type !== 'group') this.clearTopic(this.chunkTopicOf(key, from, id, i));
+        return;
+      }
       buf = this._chunkBuf[id] = {
         key, from, n: m.n || 0,
         meta: kindT === 'voice'
-          ? { name: m.name || from, ts: m.ts || Date.now(), dur: m.dur || 0, mime: m.mime || 'audio/webm' }
+          ? { name: m.name || from, ts: m.ts || Date.now(), dur: m.dur || 0, mime: m.mime || 'audio/webm', re: m.re }
           : kindT === 'stk'
-            ? { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h, mime: m.mime || 'image/webp' }
-            : { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h },
+            ? { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h, mime: m.mime || 'image/webp', re: m.re }
+            : { name: m.name || from, ts: m.ts || Date.now(), w: m.w, h: m.h, re: m.re },
         kindT,
         chunks: {}
       };
@@ -428,6 +857,7 @@ const Chat = {
           if (type === 'img') { msg.w = meta.w; msg.h = meta.h; }
           else if (type === 'stk') { msg.w = meta.w; msg.h = meta.h; msg.mime = meta.mime; }
           else { msg.dur = meta.dur; msg.mime = meta.mime; }
+          if (meta.re) msg.re = meta.re;
           const k = this.kind(key);
           if (k.type === 'group') msg.gname = Groups.name(k.gid);
           this.addHist(key, msg);
@@ -436,7 +866,8 @@ const Chat = {
           /* ack al autor (DM) o gack (grupo): cancela su push diferido */
           if (k.type === 'group') Mqtt.publish(T.evt(from), { t: 'gack', gid: k.gid, id, from: Auth.me.uid });
           else Mqtt.publish(T.evt(from), { t: 'ack', id, from: Auth.me.uid });
-          for (let c = 0; c < n; c++) this.clearTopic(this.chunkTopicOf(key, from, id, c));
+          /* limpiar chunks retenidos SOLO en DM (en grupo expiran solos) */
+          if (k.type !== 'group') for (let c = 0; c < n; c++) this.clearTopic(this.chunkTopicOf(key, from, id, c));
         } catch (e) { console.warn('assemble', e); }
       })();
     }
@@ -644,51 +1075,80 @@ function bubbleHTML(m, prev, chatKey) {
   const tick = mine && !isGroup ? `<span class="tick ${m.acked ? 'ok' : ''}">${m.acked ? '✓✓' : '✓'}</span>` : (mine ? '<span class="tick">✓</span>' : '');
   const spamChip = m.spam ? `<div class="spam-chip"><svg class="icon"><use href="#i-shield"/></svg>Spam — notificación bloqueada</div>` : '';
 
+  /* menú de mensaje (⋮) + reacciones */
+  const moreBtn = `<button class="msg-more" data-more="${esc(m.id)}" title="Responder, reaccionar, eliminar…" aria-label="Más opciones"><svg class="icon"><use href="#i-more"/></svg></button>`;
+  const rxRow = rxChipsHTML(m);
+
+  /* cita del mensaje respondido */
+  const quote = m.re
+    ? `<div class="quote" data-reid="${esc(m.re.id)}" style="--sh:${hueOf(m.re.name || '')}" title="Ver mensaje original"><strong>${esc(m.re.name || '')}</strong><span>${esc(truncate(m.re.text || '', 64))}</span></div>`
+    : '';
+  const fwd = m.fwd ? `<span class="msg-fwd"><svg class="icon"><use href="#i-forward"/></svg>Reenviado</span>` : '';
+
+  /* mensaje eliminado: lápida común para todos los tipos */
+  if (m.deleted) {
+    return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">${inner}
+      <div class="bubble deleted">
+        <span class="msg-del"><svg class="icon"><use href="#i-trash"/></svg>Se eliminó este mensaje</span>
+        ${rxRow}
+        <span class="msg-time">${time}</span>
+      </div>
+    </div>${moreBtn}</div>`;
+  }
+
   /* sticker: grande, sin burbuja (estilo WhatsApp) + ★ para guardarlo en favoritos */
   if (m.t === 'stk') {
     return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">${inner}
       <div class="stk-wrap"${spamAttr}>
+        ${quote}
         <img class="msg-stk" data-img="${esc(m.id)}" alt="Sticker" loading="lazy">
         ${mine ? '' : `<button class="stk-fav" data-fav="${esc(m.id)}" title="Guardar en mis stickers favoritos"><svg class="icon"><use href="#i-star"/></svg></button>`}
+        ${rxRow}
         ${spamChip}
         ${tick}
         <span class="msg-time">${time}</span>
       </div>
-    </div></div>`;
+    </div>${moreBtn}</div>`;
   }
 
   if (m.t === 'img') {
     return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${inner}
       <div class="bubble img ${m.spam ? 'spam' : ''}"${spamAttr}>
+        ${quote}${fwd}
         <img class="msg-img" data-img="${esc(m.id)}" alt="Imagen compartida">
+        ${rxRow}
         ${spamChip}
         <span class="msg-time">${time}</span>
       </div>
-    </div></div>`;
+    </div>${moreBtn}</div>`;
   }
 
   if (m.t === 'voice') {
     return `<div class="msg-row ${mine ? 'mine' : 'theirs'}" data-mid="${esc(m.id)}">${inner}
       <div class="bubble voice ${m.spam ? 'spam' : ''}"${spamAttr}>
+        ${quote}${fwd}
         <div class="v-row">
           <button class="v-play" data-vid="${esc(m.id)}" title="Reproducir"><svg class="icon"><use href="#i-play"/></svg></button>
           <span class="v-wave" data-vid="${esc(m.id)}">${'<i></i>'.repeat(26)}</span>
           <span class="v-dur" data-vid="${esc(m.id)}">${Voice.fmtDur(m.dur || 0)}</span>
           <button class="v-speed" data-vid="${esc(m.id)}" title="Velocidad">1x</button>
         </div>
+        ${rxRow}
         ${spamChip}
         ${tick}
         <span class="msg-time">${time}</span>
       </div>
-    </div></div>`;
+    </div>${moreBtn}</div>`;
   }
 
   return `<div class="msg-row ${mine ? 'mine' : 'theirs'} ${grp}" data-mid="${esc(m.id)}">${inner}
     <div class="bubble ${m.spam ? 'spam' : ''}"${spamAttr}>
+      ${quote}${fwd}
       <p class="msg-text">${linkify(esc(m.text))}</p>
+      ${rxRow}
       ${spamChip}
       ${tick}
       <span class="msg-time">${time}</span>
     </div>
-  </div></div>`;
+  </div>${moreBtn}</div>`;
 }
