@@ -734,6 +734,7 @@ const App = {
       else if (act === 'mic') Calls.toggleMic();
       else if (act === 'cam') Calls.toggleCam();
       else if (act === 'screen') Calls.toggleScreen();
+      else if (act === 'pin') Calls.toggleP2PPin();
       else if (act === 'minimize') Calls.minimize();
     });
     /* banner de llamada en segundo plano */

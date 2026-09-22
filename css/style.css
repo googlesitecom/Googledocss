@@ -1068,7 +1068,8 @@ select.seg {
 #callOverlay.group-active #callAvatar { display: none; }
 #callOverlay.group-active #callName { font-size: 16.5px; }
 #callOverlay.group-active #callState { font-size: 12px; }
-#callOverlay.group-active #callTimer { font-size: 12px; }
+/* el cronómetro ya va dentro del texto de estado (evita duplicado) */
+#callOverlay.group-active #callTimer { display: none; }
 #callOverlay.group-active .call-tiles { padding: 64px 16px 16px; }
 
 /* ============ Perfil de usuario (modal) ============ */
@@ -1471,3 +1472,80 @@ mark { background: color-mix(in srgb, var(--amber) 55%, transparent); color: inh
 /* ---- ajustes: volumen y vibración ---- */
 .vol-row { display: grid; gap: 8px; padding: 4px 0 2px; }
 .vol-row input[type="range"] { width: 100%; accent-color: var(--acc); height: 24px; }
+
+/* ============ Fijar participante en la llamada (foco) ============ */
+
+/* botón de chincheta en cada tile */
+.t-pin {
+  position: absolute; top: 7px; right: 7px; z-index: 4;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center; padding: 0;
+  background: rgba(4, 10, 14, .55); color: #fff;
+  border: 1px solid rgba(255, 255, 255, .25);
+  backdrop-filter: blur(6px);
+  opacity: 0; transition: opacity .16s, background .16s, transform .16s;
+  cursor: pointer;
+}
+.tile:hover .t-pin, .tile:focus-within .t-pin, .tile.pinned .t-pin { opacity: 1; }
+@media (hover: none) { .t-pin { opacity: .95; } } /* táctil: siempre visible */
+.t-pin:hover { background: rgba(4, 10, 14, .8); transform: scale(1.08); }
+.t-pin .icon { width: 14px; height: 14px; }
+.t-pin.pinned { background: var(--acc2); color: #04241b; border-color: transparent; }
+
+/* chip «fijado» junto al nombre */
+.t-pin-chip {
+  font-size: 10px; color: #04241b; background: var(--acc2);
+  padding: 1.5px 8px; border-radius: 99px; font-weight: 800;
+  flex: none; white-space: nowrap;
+}
+
+/* modo foco: la persona fijada ocupa el escenario completo y el resto
+   pasa a una tira de miniaturas arriba (estilo WhatsApp/Meet) */
+.call-tiles.spotlight { display: block; padding: 0; overflow: hidden; }
+#callOverlay.group-active .call-tiles.spotlight { padding: 0; }
+.call-tiles.spotlight .tile.spotlight {
+  position: absolute; inset: 0; z-index: 1;
+  aspect-ratio: auto; border-radius: 0; border: none;
+  background: #04080b;
+}
+.tile.spotlight video { object-fit: cover; }
+.tile.spotlight.sharing video { object-fit: contain; }
+.tile.spotlight .t-av { width: 112px; height: 112px; font-size: 38px; }
+.tile.spotlight .t-tag { bottom: 22px; left: 22px; right: 72px; }
+.tile.spotlight .t-name { font-size: 15.5px; }
+.tile.spotlight .t-pin { top: 13px; right: 13px; width: 38px; height: 38px; opacity: 1; }
+.tile.spotlight .t-pin .icon { width: 17px; height: 17px; }
+.tile.spotlight .t-wait { bottom: auto; top: 50%; transform: translate(-50%, -50%); }
+
+/* tira de miniaturas de los demás participantes */
+.filmstrip {
+  position: absolute; top: 54px; left: 10px; right: 10px; z-index: 5;
+  display: flex; gap: 8px;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 3px; margin: -3px; /* aire para la barra sin saltos de layout */
+  scrollbar-width: thin;
+}
+.filmstrip .tile { width: 128px; flex: none; aspect-ratio: 16 / 10; border-radius: 12px; }
+.filmstrip .tile .t-av { width: 34px; height: 34px; font-size: 12.5px; }
+.filmstrip .t-name { font-size: 10.5px; }
+.filmstrip .t-scr, .filmstrip .t-pin-chip { font-size: 9px; padding: 1px 6px; }
+.filmstrip .t-pin { top: 5px; right: 5px; width: 24px; height: 24px; }
+.filmstrip .t-pin .icon { width: 11px; height: 11px; }
+
+/* 1:1: «fijar pantalla» oculta la miniatura propia (solo se ve el otro) */
+#callOverlay.pin-focus #localVideo { display: none !important; }
+
+@media (max-width: 920px) {
+  .filmstrip { top: 48px; left: 8px; right: 8px; }
+  .filmstrip .tile { width: 106px; }
+  .tile.spotlight .t-av { width: 88px; height: 88px; font-size: 30px; }
+  .tile.spotlight .t-tag { bottom: 16px; left: 14px; right: 58px; }
+}
+@media (max-width: 480px) {
+  .filmstrip .tile { width: 94px; }
+  .filmstrip .t-pin { width: 22px; height: 22px; }
+  /* 6 botones de control (1:1): que quepan en pantallas estrechas */
+  .call-btn { width: 47px; height: 47px; }
+  .call-btn .icon { width: 19px; height: 19px; }
+  .call-controls { gap: 10px; bottom: 16px; }
+}

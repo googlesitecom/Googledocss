@@ -17,7 +17,14 @@
        medios en curso (notificación con colgar/silenciar en Android) y
        el audio remoto sigue sonando con la app en segundo plano.
      · Navegadores sin Document PiP → banner interno estilo WhatsApp
-       (el audio también continúa con la pestaña oculta).                 */
+       (el audio también continúa con la pestaña oculta).
+   - FIJAR PARTICIPANTE (foco): en grupo, cada tile lleva una chincheta
+     (o doble clic): la persona fijada ocupa la pantalla grande y el
+     resto pasa a una tira de miniaturas arriba (estilo WhatsApp/Meet).
+     Quien comparte pantalla se enfoca solo (auto) sin pisar un fijado
+     manual; si el fijado se va, el foco se libera. En 1:1 «fijar
+     pantalla» oculta la miniatura propia. El PiP muestra el video
+     del participante fijado.                                                   */
 'use strict';
 
 const Calls = {
@@ -63,6 +70,12 @@ const Calls = {
   _pipClosing: false,  /* cierre intencional (no restaurar) */
   _pipGrpSig: '',      /* firma del conjunto de participantes (refresco puntual) */
   _msSet: false,       /* Media Session configurada */
+
+  /* fijar participante (foco) */
+  pinned: null,        /* uid fijado en la pantalla grande (grupo) */
+  _pinAuto: false,     /* el fijado actual lo decidió el compartir pantalla */
+  _p2pPinned: false,   /* 1:1: pantalla fijada (miniatura propia oculta) */
+  _tilesBound: false,  /* eventos de los tiles cableados */
 
   init() {
     if (this.peer || !Auth.me) return;
@@ -569,6 +582,7 @@ const Calls = {
       }
       else {
         this.g.members = this.g.members.filter((u) => u !== m.from);
+        if (this.pinned === m.from) { this.pinned = null; this._pinAuto = false; } /* el fijado se fue */
         if (this.state === 'in') {
           /* estaba sonando y ya no queda nadie en la llamada */
           if (!this.g.members.length) {
@@ -587,7 +601,16 @@ const Calls = {
     } else if (m.ev === 'media') {
       this.media[m.from] = { vid: m.vid || 'none', mic: m.mic !== false };
       if (this.mode === 'group') {
-        if (this.state === 'active') this._renderTiles();
+        if (this.state === 'active') {
+          /* auto-foco: quien comparte pantalla ocupa la pantalla grande
+             (salvo que haya un fijado MANUAL — ese manda) */
+          if (m.vid === 'screen') {
+            if (!this.pinned || this._pinAuto) this.setPin(m.from, true);
+          } else if (this._pinAuto && this.pinned === m.from) {
+            this.setPin(null); /* dejó de compartir: liberar el auto-foco */
+          }
+          this._renderTiles();
+        }
       }
     }
   },
@@ -609,6 +632,66 @@ const Calls = {
     } else if (this.mode === 'group' && this.g) {
       this._publishGrp('media', { vid, mic });
     }
+  },
+
+  /* ================== fijar participante (foco) ==================
+     La persona fijada ocupa la pantalla grande de la llamada de grupo
+     y el resto pasa a una tira de miniaturas arriba (estilo WhatsApp):
+     · chincheta en cada tile o doble clic sobre el tile;
+     · quien comparte pantalla se enfoca SOLO (auto), sin pisar un
+       fijado manual; al dejar de compartir el auto-foco se libera;
+     · si el fijado sale de la llamada, el foco se libera solo.
+     En 1:1 «fijar pantalla» oculta la miniatura propia. */
+  setPin(uid, auto) {
+    this.pinned = uid || null;
+    this._pinAuto = !!auto && !!this.pinned;
+    if (this.mode === 'group' && this.state === 'active') this._renderTiles();
+    this._pipSyncMedia();
+  },
+
+  togglePin(uid) {
+    if (this.mode !== 'group' || this.state !== 'active') return;
+    if (this.pinned === uid) {
+      this.setPin(null);
+      UI.toast('Quitaste el foco de la llamada.');
+    } else {
+      this.setPin(uid, false);
+      const self = uid === Auth.me.uid;
+      UI.toast(self ? 'Fijaste tu propio video en la pantalla.'
+        : `Fijaste a ${Friends.name(uid) || uid} en la pantalla.`);
+    }
+    if (Settings.sound) Sound.react();
+  },
+
+  toggleP2PPin() {
+    if (this.mode !== 'p2p' || this.state !== 'active') return;
+    this._p2pPinned = !this._p2pPinned;
+    const ov = $('#callOverlay');
+    if (ov) ov.classList.toggle('pin-focus', this._p2pPinned);
+    const btn = $('#callControls [data-act="pin"]');
+    if (btn) btn.classList.toggle('toggled', this._p2pPinned);
+    if (Settings.sound) Sound.react();
+  },
+
+  _bindTileEvents() {
+    if (this._tilesBound) return;
+    this._tilesBound = true;
+    const box = $('#callTiles');
+    if (box) {
+      box.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-pin]');
+        if (!b) return;
+        e.stopPropagation();
+        this.togglePin(b.dataset.pin);
+      });
+      box.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.t-pin')) return; /* la chincheta ya lo maneja */
+        const t = e.target.closest('.tile[data-tuid]');
+        if (t) this.togglePin(t.dataset.tuid);
+      });
+    }
+    const rv = $('#remoteVideo');
+    if (rv) rv.addEventListener('dblclick', () => this.toggleP2PPin());
   },
 
   /* ================== conexiones ================== */
@@ -653,6 +736,8 @@ const Calls = {
     if (c) { try { c.close(); } catch (e) {} delete this.conns[uid]; }
     delete this.streams[uid];
     this._detachAudio(uid);
+    /* si la persona FIJADA se fue → liberar el foco */
+    if (this.pinned === uid) { this.pinned = null; this._pinAuto = false; this._pipSyncMedia(); }
 
     if (this.mode === 'group' && this.g) {
       this.g.members = this.g.members.filter((u) => u !== uid);
@@ -736,6 +821,7 @@ const Calls = {
 
     this.state = 'idle'; this.mode = null; this.meta = null; this.g = null; this._invite = null;
     this._video = false; this._t0 = 0; this._minimized = false;
+    this.pinned = null; this._pinAuto = false; this._p2pPinned = false;
 
     this._closePip();
     this._clearMediaSession();
@@ -744,7 +830,7 @@ const Calls = {
     const gcb = $('#grpCallBar');
     if (gcb) gcb.hidden = true;
     const tiles = $('#callTiles');
-    if (tiles) { tiles.innerHTML = ''; tiles.hidden = true; }
+    if (tiles) { tiles.innerHTML = ''; tiles.hidden = true; tiles.classList.remove('spotlight'); }
     const gm = $('#callGrpMembers');
     if (gm) gm.hidden = true;
     this.hideOverlay();
@@ -822,7 +908,11 @@ const Calls = {
       this._broadcastMedia();
       this._pipSyncControls();
       this._pipSyncMedia();
-      if (this.mode === 'group' && this.state === 'active') this._renderTiles();
+      if (this.mode === 'group' && this.state === 'active') {
+        /* mi pantalla ocupa el foco (salvo fijado manual de otro) */
+        if (!this.pinned || this._pinAuto) this.setPin(Auth.me.uid, true);
+        this._renderTiles();
+      }
       UI.toast('Compartiendo tu pantalla.');
     } catch (e) {
       if (e && e.name !== 'NotAllowedError') { console.warn('getDisplayMedia', e); UI.toast('No se pudo compartir la pantalla.'); }
@@ -847,7 +937,10 @@ const Calls = {
     this._broadcastMedia();
     this._pipSyncControls();
     this._pipSyncMedia();
-    if (this.mode === 'group' && this.state === 'active') this._renderTiles();
+    if (this.mode === 'group' && this.state === 'active') {
+      if (this._pinAuto && this.pinned === Auth.me.uid) this.setPin(null); /* libera el auto-foco */
+      this._renderTiles();
+    }
     UI.toast('Dejaste de compartir la pantalla.');
   },
 
@@ -1110,6 +1203,31 @@ const Calls = {
           av.style.display = 'grid';
         }
       }
+    } else if (this.mode === 'group') {
+      /* en grupo: si hay alguien FIJADO con video, su imagen ocupa el
+         escenario de la ventana flotante (debajo queda la rejilla) */
+      const p = this.pinned;
+      const isMe = p === Auth.me.uid;
+      const md = p ? (this.media[p] || {}) : {};
+      const vidOn = p && (isMe
+        ? !!(this._screenStream || this._camTrack)
+        : ((md.vid === 'cam' || md.vid === 'screen') && !!this.streams[p]));
+      const wantVideo = !!vidOn && this.state === 'active';
+      if (wantVideo !== this._pipVideoOn) {
+        this._pipVideoOn = wantVideo;
+        const v = this._pipEls.video;
+        const av = this._pipEls.bigav;
+        if (wantVideo) {
+          const st = isMe ? (this._screenStream || this.localStream) : this.streams[p];
+          try { v.srcObject = st || null; if (st) v.play().catch(() => {}); } catch (e) {}
+          v.style.display = 'block';
+          av.style.display = 'none';
+        } else {
+          try { v.srcObject = null; } catch (e) {}
+          v.style.display = 'none';
+          av.style.display = 'none'; /* en grupo el escenario es la rejilla */
+        }
+      }
     }
   },
 
@@ -1241,6 +1359,7 @@ const Calls = {
   showOverlay(st, name, remoteStream) {
     const ov = $('#callOverlay');
     if (!this._minimized) ov.hidden = false;
+    this._bindTileEvents(); /* chinchetas de los tiles + doble clic */
     ov.classList.toggle('ring', st === 'in' || st === 'out');
     const grpMode = this.mode === 'group';
 
@@ -1339,7 +1458,11 @@ const Calls = {
     const me = Auth.me.uid;
     const others = [...new Set([...(this.g.members || []), ...Object.keys(this.conns), ...Object.keys(this.streams)])].filter((u) => u !== me);
     const all = [me, ...others];
-    box.innerHTML = all.map((u) => {
+
+    /* la persona fijada ya no está → liberar el foco */
+    if (this.pinned && !all.includes(this.pinned)) { this.pinned = null; this._pinAuto = false; }
+
+    const tile = (u, spot) => {
       const connected = u === me ? true : !!this.streams[u];
       const md = u === me ? {} : (this.media[u] || {});
       const vid = u === me
@@ -1348,17 +1471,32 @@ const Calls = {
       const micOff = u === me ? (this._audioTrack && !this._audioTrack.enabled) : (md.mic === false);
       const nm = u === me ? 'Tú' : (Friends.name(u) || u);
       const hasVideo = vid === 'cam' || vid === 'screen';
-      return `<div class="tile ${connected ? 'on' : 'wait'} ${hasVideo ? 'has-video' : ''} ${vid === 'screen' ? 'sharing' : ''}" data-tuid="${esc(u)}">
+      const isPin = this.pinned === u;
+      return `<div class="tile ${spot ? 'spotlight' : ''} ${connected ? 'on' : 'wait'} ${hasVideo ? 'has-video' : ''} ${vid === 'screen' ? 'sharing' : ''} ${isPin ? 'pinned' : ''}" data-tuid="${esc(u)}">
         <video autoplay playsinline ${u === me ? 'muted' : ''} data-tv="${esc(u)}"></video>
         <div class="t-av avatar" style="--h:${hueOf(u)}">${Avatars.html(u, u === me ? Auth.me.name : (Friends.name(u) || u))}</div>
         <div class="t-tag">
           <span class="t-name">${esc(nm)}</span>
           ${micOff ? '<svg class="icon t-micoff"><use href="#i-mic-off"/></svg>' : ''}
           ${vid === 'screen' ? '<span class="t-scr">· pantalla</span>' : ''}
+          ${isPin ? '<span class="t-pin-chip">fijado</span>' : ''}
         </div>
         ${connected ? '' : '<span class="t-wait">conectando…</span>'}
+        <button class="t-pin ${isPin ? 'pinned' : ''}" data-pin="${esc(u)}" title="${isPin ? 'Quitar del foco' : 'Fijar en la pantalla'}" aria-label="${isPin ? 'Quitar a ' + esc(nm) + ' del foco' : 'Fijar a ' + esc(nm) + ' en la pantalla'}"><svg class="icon"><use href="#i-pin"/></svg></button>
       </div>`;
-    }).join('');
+    };
+
+    if (this.pinned) {
+      /* MODO FOCO: el fijado ocupa el escenario y el resto va arriba
+         en una tira de miniaturas desplazable */
+      const rest = all.filter((u) => u !== this.pinned);
+      box.classList.add('spotlight');
+      box.innerHTML = tile(this.pinned, true)
+        + `<div class="filmstrip">${rest.map((u) => tile(u, false)).join('')}</div>`;
+    } else {
+      box.classList.remove('spotlight');
+      box.innerHTML = all.map((u) => tile(u, false)).join('');
+    }
 
     all.forEach((u) => {
       const v = box.querySelector(`video[data-tv="${CSS.escape(u)}"]`);
@@ -1387,13 +1525,21 @@ const Calls = {
     const micBtn = () => `<button class="call-btn" data-act="mic" title="Silenciar micrófono"><svg class="icon"><use href="#i-mic"/></svg></button>`;
     const camBtn = () => `<button class="call-btn" data-act="cam" title="Cámara"><svg class="icon"><use href="#i-video"/></svg></button>`;
     const screenBtn = () => `<button class="call-btn ${this._screenStream ? 'toggled' : ''}" data-act="screen" title="Compartir pantalla"><svg class="icon"><use href="#i-monitor"/></svg></button>`;
+    /* 1:1 con video remoto: fijar pantalla oculta la miniatura propia */
+    const pinBtn = () => {
+      if (this.mode !== 'p2p') return '';
+      const md = this.meta ? (this.media[this.meta.from] || {}) : {};
+      const rvid = md.vid || (this._video ? 'cam' : 'none');
+      if (rvid !== 'cam' && rvid !== 'screen') return '';
+      return `<button class="call-btn ${this._p2pPinned ? 'toggled' : ''}" data-act="pin" title="Fijar pantalla (oculta tu miniatura)"><svg class="icon"><use href="#i-pin"/></svg></button>`;
+    };
     const minBtn = () => `<button class="call-btn" data-act="minimize" title="${this._canPip() ? 'Ventana flotante (visible en otras pestañas y apps)' : 'Seguir en segundo plano'}"><svg class="icon"><use href="#i-chev-down"/></svg></button>`;
     const hangBtn = () => `<button class="call-btn hangup" data-act="hangup" title="Colgar"><svg class="icon"><use href="#i-phone"/></svg></button>`;
 
     if (st === 'out' || st === 'connecting') c.innerHTML = minBtn() + hangBtn();
     else if (st === 'in') c.innerHTML = `<button class="call-btn hangup" data-act="decline" title="Rechazar"><svg class="icon"><use href="#i-phone"/></svg></button>
       <button class="call-btn answer" data-act="accept" title="Responder"><svg class="icon"><use href="#i-phone"/></svg></button>`;
-    else if (st === 'active') c.innerHTML = micBtn() + camBtn() + screenBtn() + minBtn() + hangBtn();
+    else if (st === 'active') c.innerHTML = micBtn() + camBtn() + screenBtn() + pinBtn() + minBtn() + hangBtn();
     else c.innerHTML = '';
   },
 
@@ -1401,7 +1547,7 @@ const Calls = {
     const ov = $('#callOverlay');
     if (!ov) return;
     ov.hidden = true;
-    ov.classList.remove('ring', 'video-active', 'screen-share', 'local-screen', 'group-active');
+    ov.classList.remove('ring', 'video-active', 'screen-share', 'local-screen', 'group-active', 'pin-focus');
     try {
       $('#remoteVideo').srcObject = null;
       $('#localVideo').srcObject = null;
