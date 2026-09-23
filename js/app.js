@@ -240,13 +240,19 @@ const App = {
     const perm = Push.permission();
     const pushOn = Push.isOn();
     const accentH = Settings.accentH != null ? Settings.accentH : Theme.DEFAULT_H;
-    const bk = (typeof Backup !== 'undefined' && Backup.status) ? Backup.status() : { on: true, t: 0, bytes: 0, media: 0 };
+    const bk = (typeof Backup !== 'undefined' && Backup.status) ? Backup.status() : { on: true, t: 0, bytes: 0, media: 0, gh: { pat: false, t: 0, bytes: 0, media: 0, err: '' } };
     const bkMediaOn = Settings.bkMedia !== false;
+    const gh = bk.gh || { pat: false, t: 0, bytes: 0, media: 0, err: '' };
     const bkStatusText = !bk.on
       ? 'Copia automática desactivada: usa «Respaldar ahora» cuando quieras.'
       : bk.t
         ? `Última copia: ${new Date(bk.t).toLocaleString('es', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${fmtKB(bk.bytes)}${bk.media ? ' · multimedia: ' + bk.media : ''} — se restaura sola al entrar en otro dispositivo.`
         : 'Sin copia todavía: se creará automáticamente con tu actividad (o pulsa «Respaldar ahora»).' + (!bk.hasKey ? ' Pedirá tu contraseña para cifrarla.' : '');
+    const ghText = gh.pat
+      ? (gh.t
+          ? `Copia duradera: ${new Date(gh.t).toLocaleString('es', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${fmtKB(gh.bytes)}${gh.media ? ' · multimedia: ' + gh.media : ''} — en la rama «nx-backups» de Googledocss: sobrevive a reinicios del broker y del dispositivo.` + (gh.err ? ` Último error: ${gh.err}` : '')
+          : 'Conectado: la próxima copia se guardará también en GitHub.')
+      : 'Sin conectar: la copia vive solo en la red de la app (temporal). Conecta GitHub para blindarla ante reinicios de fábrica.';
 
     box.innerHTML = `
       <div class="set-card">
@@ -355,7 +361,7 @@ const App = {
 
       <div class="set-card">
         <h3><svg class="icon"><use href="#i-cloud"/></svg>Copia de seguridad</h3>
-        <p class="desc">Tus chats, grupos, stickers y ajustes se guardan <strong>cifrados con tu contraseña</strong> en la red y se restauran solos al entrar en otro dispositivo. Al cerrar sesión se guarda una copia completa y tus chats se conservan también en este dispositivo.</p>
+        <p class="desc">Tus chats, grupos, stickers y ajustes se guardan <strong>cifrados con tu contraseña</strong> y se restauran solos al entrar en otro dispositivo. Al cerrar sesión se guarda una copia completa y tus chats se conservan también en este dispositivo.</p>
         <div class="set-row">
           <div class="lbl"><strong>Copia automática</strong><span>Respaldar tras cada cambio y al cerrar sesión</span></div>
           <label class="sw"><input type="checkbox" data-set="bk" ${bk.on ? 'checked' : ''}><i></i></label>
@@ -371,6 +377,18 @@ const App = {
         <button id="btnBkNow" class="f-btn chat" style="width:100%;justify-content:center;margin-top:10px"><svg class="icon"><use href="#i-cloud"/></svg>Respaldar ahora</button>
         <button id="btnBkRestore" class="f-btn chat" style="width:100%;justify-content:center;margin-top:8px">Restaurar en este dispositivo</button>
         ${bk.t || bk.media ? '<button id="btnBkWipe" class="f-btn reject" style="width:100%;justify-content:center;margin-top:8px">Borrar copia de la nube</button>' : ''}
+        <div class="gh-block">
+          <div class="lbl" style="margin:0 0 8px"><strong><svg class="icon" style="vertical-align:-2px"><use href="#i-github"/></svg> Respaldo duradero (GitHub)</strong></div>
+          <p class="desc">La red de la app es veloz pero temporal: un reinicio del servicio puede borrar la copia (por eso se perdieron tus datos al restaurar de fábrica). Conecta tu token y Nexo guardará <strong>además</strong> la misma copia cifrada en la rama «nx-backups» de tu repositorio <strong>Googledocss</strong>: sobrevive a cualquier borrado y se restaura sola en cualquier dispositivo, incluso sin el token.</p>
+          <div class="bk-status">
+            <span class="bk-dot ${gh.pat && gh.t ? 'ok' : ''}"></span>
+            <span>${ghText}</span>
+          </div>
+          ${!gh.pat
+            ? '<button id="btnGHConnect" class="f-btn add" style="width:100%;justify-content:center;margin-top:10px"><svg class="icon"><use href="#i-github"/></svg>Conectar GitHub</button>'
+            : `<button id="btnGHNow" class="f-btn chat" style="width:100%;justify-content:center;margin-top:10px">Respaldar en GitHub ahora</button>
+               <button id="btnGHOff" class="f-btn reject" style="width:100%;justify-content:center;margin-top:8px">Desconectar GitHub</button>`}
+        </div>
       </div>
 
       <div class="set-card">
@@ -425,6 +443,8 @@ const App = {
     else if (m.t === 'unfriend') Friends.onUnfriend(m.from);
     else if (m.t === 'rename') Friends.onRename(m.from, m.to, m.name);
     else if (m.t === 'gleft') Groups.onMemberLeft(m);
+    else if (m.t === 'gadmin') UI.toast(`Eres administrador del grupo «${m.gname || 'grupo'}».`, { icon: 'users' });
+    else if (m.t === 'gdeadmin') UI.toast(`Ya no eres administrador del grupo «${m.gname || 'grupo'}».`, { icon: 'users' });
     else if (m.t === 'ginvite') Groups.onInvite(m.gid, { gid: m.gid, name: m.name, from: m.from, fromName: m.fromName });
     else if (m.t === 'gcall') { if (typeof Calls !== 'undefined') Calls.onGroupInvite(m); }
     else if (m.t === 'callmedia') { if (typeof Calls !== 'undefined') Calls.onMediaEvt(m); }
@@ -998,8 +1018,38 @@ const App = {
         if (!(await App.verifyPassword(pwd))) { UI.toast('Contraseña incorrecta.'); return; }
         try {
           const n = await Backup.wipeCloud();
-          UI.toast(n ? `Copia de la nube borrada (${n} temas).` : 'No había copia que borrar.');
+          UI.toast(n ? `Copia de la nube borrada (${n} elementos entre red y GitHub).` : 'No había copia que borrar.');
         } catch (ex) { UI.toast(ex.message || 'No se pudo borrar.'); }
+        App.renderSettings();
+      } else if (btn.id === 'btnGHConnect') {
+        App.openGHModal();
+      } else if (btn.id === 'btnGHNow') {
+        btn.disabled = true;
+        const orig = btn.textContent;
+        btn.textContent = 'Respaldando en GitHub…';
+        try {
+          if (!Backup.hasKey()) {
+            const pwd = await App.askPasswordModal('Respaldar en GitHub', 'Confirma tu contraseña para cifrar la copia.');
+            if (!pwd) { btn.disabled = false; btn.textContent = orig; return; }
+            if (!(await App.verifyPassword(pwd))) { UI.toast('Contraseña incorrecta.'); btn.disabled = false; btn.textContent = orig; return; }
+            await Backup.keyFromPassword(pwd);
+          }
+          const r = await Backup.flush({ media: Settings.bkMedia !== false });
+          if (r) UI.toast(`Copia guardada (${fmtKB(r.bytes)}${r.media && r.media.published ? ' · ' + r.media.published + ' elemento(s) nuevo(s)' : ''}).`, { icon: 'cloud' });
+          else UI.toast('No se pudo respaldar ahora mismo (¿sin conexión?).');
+        } catch (ex) {
+          UI.toast(ex.message || 'No se pudo respaldar.');
+        }
+        btn.disabled = false;
+        btn.textContent = orig;
+        App.renderSettings();
+      } else if (btn.id === 'btnGHOff') {
+        const ok = await UI.confirm('Desconectar GitHub',
+          'Este dispositivo dejará de guardar la copia duradera. La copia que ya está en GitHub se conserva: usa «Borrar copia de la nube» si quieres eliminarla del todo.',
+          'Desconectar', true);
+        if (!ok) return;
+        GH.clearPat();
+        UI.toast('GitHub desconectado en este dispositivo.');
         App.renderSettings();
       }
     });
@@ -1079,6 +1129,69 @@ const App = {
     if (!s || !pwd) return false;
     try { return (await deriveKey(pwd, s.salt, s.iters || PBKDF2_ITERS)) === s.hash; }
     catch (e) { return false; }
+  },
+
+  /* ================== modal: conectar GitHub (v11) ================== */
+  openGHModal() {
+    const root = $('#modalRoot');
+    if (!root) return;
+    root.innerHTML = `
+      <div class="modal group-modal">
+        <h3>Conectar GitHub</h3>
+        <p>Blinda tu copia de seguridad: la misma copia cifrada con tu contraseña se guardará además en la rama «nx-backups» del repositorio <strong>Googledocss</strong>. Nadie (ni GitHub) puede leerla sin tu contraseña, y en cualquier dispositivo se restaura sola con solo tu usuario y contraseña.</p>
+        <ol class="gh-steps">
+          <li>Abre <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer">github.com/settings/tokens</a> (token clásico).</li>
+          <li>Genera un token nuevo con el ámbito <strong>repo</strong>.</li>
+          <li>Pégalo aquí: queda en este dispositivo y viaja <strong>cifrado</strong> dentro de tu copia, para que tus otros dispositivos lo recuperen solos.</li>
+        </ol>
+        <label class="bio-field cu-field">Token de acceso personal
+          <input id="ghPat" class="set-input" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… / github_pat_…">
+        </label>
+        <p id="ghErr" class="form-err" hidden></p>
+        <div class="m-acts">
+          <button class="btn-ghost" data-r="0">Cancelar</button>
+          <button id="ghOk" class="btn-primary" data-r="1">Conectar</button>
+        </div>
+      </div>`;
+    root.hidden = false;
+    const err = $('#ghErr');
+    const inp = $('#ghPat');
+    const close = () => { root.hidden = true; root.innerHTML = ''; root.onclick = null; };
+    const go = async () => {
+      if (!$('#ghOk')) return;
+      err.hidden = true;
+      const btn = $('#ghOk');
+      btn.disabled = true;
+      btn.textContent = 'Conectando…';
+      try {
+        await GH.connect(inp.value);
+        close();
+        UI.toast('GitHub conectado: guardando tu copia duradera…', { icon: 'cloud' });
+        /* primer respaldo duradero completo (datos + multimedia) */
+        try {
+          if (!Backup.hasKey()) {
+            const pwd = await App.askPasswordModal('Cifrar la copia', 'Confirma tu contraseña para cifrar la copia duradera.');
+            if (pwd && (await App.verifyPassword(pwd))) await Backup.keyFromPassword(pwd);
+          }
+          const r = await Backup.flush({ media: Settings.bkMedia !== false });
+          if (r) UI.toast(`Copia duradera guardada (${fmtKB(r.bytes)}).`, { icon: 'cloud' });
+        } catch (e2) { console.warn('gh first flush', e2); }
+        App.renderSettings();
+      } catch (ex) {
+        err.textContent = ex.message || 'No se pudo conectar con GitHub.';
+        err.hidden = false;
+        btn.disabled = false;
+        btn.textContent = 'Conectar';
+      }
+    };
+    root.onclick = (e) => {
+      const b = e.target.closest('[data-r]');
+      if (!b) return;
+      if (b.dataset.r === '1') go();
+      else close();
+    };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+    setTimeout(() => inp.focus(), 60);
   },
 
   /* pulsación larga (táctil) → menú contextual, sin interferir con el scroll */

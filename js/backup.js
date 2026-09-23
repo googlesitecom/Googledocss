@@ -25,7 +25,17 @@
      · Cambiar de usuario → la copia migra al nuevo uid (re-publicación
        de los chunks tal cual, sin re-cifrar) y se limpia la antigua.
      · La clave se cachea en nexo_<uid>_bk solo durante la sesión (se
-       borra al cerrar sesión) → el auto-respaldo sobrevive a recargas.  */
+       borra al cerrar sesión) → el auto-respaldo sobrevive a recargas.
+
+   v11 — ESPEJO DURADERO EN GITHUB: el broker público NO garantiza la
+   retención (un reinicio del servicio puede purgar la copia → así se
+   perdieron chats y contactos tras un reinicio de fábrica). La misma
+   copia cifrada se espeja además como archivos JSON de la rama
+   «nx-backups» del repositorio de la propia app (gh.js): lectura
+   pública sin token, escritura con el PAT del usuario (viaja cifrado
+   dentro de la propia copia → los otros dispositivos lo recuperan
+   solos). El registro de la CUENTA también va dentro (data.acct):
+   aunque el broker pierda el directorio, se puede iniciar sesión.  */
 'use strict';
 
 const Backup = {
@@ -34,6 +44,7 @@ const Backup = {
   MAX_MEDIA_BYTES: 6 * 1024 * 1024,
   AUTO_DELAY: 45000,     /* auto-respaldo 45 s después del último cambio */
   AUTO_MIN_GAP: 30000,   /* y nunca más de una vez cada 30 s */
+  GH_MIN_GAP: 300000,    /* v11: espejo GitHub como mucho cada 5 min (commits) */
 
   _key: null,            /* CryptoKey AES-GCM en memoria */
   _salt: null,
@@ -43,6 +54,7 @@ const Backup = {
   _busy: false,
   _restoring: false,
   _needsInit: false,     /* copia por crear en cuanto la conexión con identidad esté viva */
+  _ghErr: '',            /* v11: último error del espejo duradero (para Ajustes) */
 
   keyLS: (u) => `nexo_${u}_bk`,
   metaLS: (u) => `nexo_${u}_bkmeta`,
@@ -97,6 +109,15 @@ const Backup = {
       this._setMeta({ salt: this._salt, iters: this._iters });
       return { salt: this._salt, iters: this._iters };
     }
+    /* v11: el broker pudo purgar los retenidos → sal del espejo duradero */
+    if (typeof GH !== 'undefined') {
+      const gdm = await GH.rawJSON(GH.paths.dm(Auth.me.uid));
+      if (gdm && gdm.salt) {
+        this._salt = gdm.salt; this._iters = gdm.iters || PBKDF2_ITERS;
+        this._setMeta({ salt: this._salt, iters: this._iters });
+        return { salt: this._salt, iters: this._iters };
+      }
+    }
     return null;
   },
 
@@ -117,12 +138,20 @@ const Backup = {
       if (k === `nexo_${u}_avatars` || k === `nexo_${u}_groups_av`) continue;
       ls[k] = localStorage.getItem(k);
     }
-    return { v: 1, t: Date.now(), uid: u, ls };
+    /* v11: registro de la CUENTA (cifrado dentro de la copia) → si el
+       broker purga el directorio, la cuenta se recupera desde GitHub */
+    const s = LS.get(K.session, null);
+    const acct = s ? {
+      uid: s.uid, name: s.name, av: s.av || '', bio: s.bio || '',
+      salt: s.salt, hash: s.hash, iters: s.iters || PBKDF2_ITERS,
+      created: s.created || Date.now()
+    } : null;
+    return { v: 2, t: Date.now(), uid: u, acct, ls };
   },
 
   /* ================== publicación de DATOS ================== */
 
-  async publishData() {
+  async publishData(opts = {}) {
     const u = Auth.me.uid;
     await this._ensureKey();
     const si = await this._saltInfo();
@@ -134,20 +163,94 @@ const Backup = {
     const n = Math.ceil(ctB64.length / this.CHUNK);
     const sum = (await sha256Hex(ct)).slice(0, 16);
     const prev = this._getMeta();
-    /* limpiar chunks sobrantes de una copia anterior más grande */
-    if (prev && prev.chunks > n) {
-      for (let i = n; i < prev.chunks; i++) await Mqtt.publishQ(T.bkd(u, i), '', { retain: true }, 2500);
-    }
-    for (let i = 0; i < n; i++) {
-      await Mqtt.publishQ(T.bkd(u, i), { i, d: ctB64.substr(i * this.CHUNK, this.CHUNK) }, { retain: true });
-    }
-    await Mqtt.publishQ(T.bkdm(u), {
+    const manifest = {
       v: 1, alg: 'A256GCM', kdf: 'PBKDF2', hash: 'SHA-256',
       iters: si.iters, salt: si.salt, iv: bytesToB64(iv),
       n, t: data.t, sum
-    }, { retain: true });
+    };
+    const chunks = [];
+    for (let i = 0; i < n; i++) chunks.push({ i, d: ctB64.substr(i * this.CHUNK, this.CHUNK) });
+
+    if (Mqtt.connected) {
+      /* limpiar chunks sobrantes de una copia anterior más grande */
+      if (prev && prev.chunks > n) {
+        for (let i = n; i < prev.chunks; i++) await Mqtt.publishQ(T.bkd(u, i), '', { retain: true }, 2500);
+      }
+      for (const ch of chunks) await Mqtt.publishQ(T.bkd(u, ch.i), ch, { retain: true });
+      await Mqtt.publishQ(T.bkdm(u), manifest, { retain: true });
+    }
     this._setMeta({ t: data.t, bytes: ctB64.length, chunks: n, salt: si.salt, iters: si.iters });
+
+    /* v11: espejo duradero en GitHub (misma carga cifrada) */
+    await this._ghSyncData(u, chunks, manifest, ctB64.length, opts.ghForce !== false);
     return ctB64.length;
+  },
+
+  /* ================== v11: espejo duradero en GitHub ================== */
+
+  /* publica los chunks y el manifiesto de DATOS en la rama nx-backups.
+     ghForce=false → como mucho una vez cada GH_MIN_GAP (menos commits) */
+  async _ghSyncData(u, chunks, manifest, bytes, force = true) {
+    if (typeof GH === 'undefined' || !GH.configured()) return false;
+    const m = this._getMeta() || {};
+    if (!force && Date.now() - (m.ghT || 0) < this.GH_MIN_GAP) return false;
+    try {
+      await GH.run(() => GH.ensureBranch());
+      /* limpiar chunks sobrantes de una copia anterior más grande */
+      if (m.ghChunks > chunks.length) {
+        for (let i = chunks.length; i < m.ghChunks; i++) {
+          try { await GH.run(() => GH.delFile(GH.paths.d(u, i))); } catch (e) {}
+        }
+      }
+      for (const ch of chunks) await GH.run(() => GH.putFile(GH.paths.d(u, ch.i), ch));
+      await GH.run(() => GH.putFile(GH.paths.dm(u), manifest));
+      this._setMeta({ ghT: manifest.t || Date.now(), ghChunks: chunks.length, ghBytes: bytes || 0 });
+      this._ghErr = '';
+      return true;
+    } catch (e) {
+      console.warn('gh sync data', e);
+      this._ghErr = (e && e.message) || 'Error de GitHub';
+      return false;
+    }
+  },
+
+  /* junta los chunks de DATOS desde el espejo de GitHub. El CDN de
+     raw.githubusercontent puede servir MEZCLADO durante la propagación de
+     un commit nuevo (manifiesto viejo + chunks nuevos → el descifrado
+     fallaría): se verifica con el checksum del manifiesto y se reintenta. */
+  async _ghDataB64(u, dm) {
+    if (typeof GH === 'undefined' || !dm || !dm.n) return null;
+    const grab = async () => {
+      const parts = [];
+      for (let i = 0; i < dm.n; i++) {
+        const ch = await GH.rawJSON(GH.paths.d(u, i));
+        if (!ch || !ch.d) return null;
+        parts.push(ch.d);
+      }
+      return parts.join('') || null;
+    };
+    let b64 = await grab();
+    if (b64 && dm.sum) {
+      let ok = false;
+      try { ok = (await sha256Hex(b64ToBytes(b64))).slice(0, 16) === dm.sum; } catch (e) {}
+      if (!ok) {
+        await sleep(1500);
+        b64 = await grab();
+        if (b64) {
+          try { ok = (await sha256Hex(b64ToBytes(b64))).slice(0, 16) === dm.sum; } catch (e) {}
+          if (!ok) return null;
+        }
+      }
+    }
+    return b64;
+  },
+
+  /* ¿el ciphertext ensamblado coincide con el checksum del manifiesto? */
+  async _sumOK(ctB64, dm) {
+    if (!ctB64) return false;
+    if (!dm || !dm.sum) return true;
+    try { return (await sha256Hex(b64ToBytes(ctB64))).slice(0, 16) === dm.sum; }
+    catch (e) { return false; }
   },
 
   /* ================== multimedia (incremental) ================== */
@@ -201,6 +304,14 @@ const Backup = {
       this._setMeta({ fm: remote });
       return remote;
     }
+    /* v11: manifiesto de multimedia desde el espejo duradero */
+    if (typeof GH !== 'undefined') {
+      const gfm = await GH.rawJSON(GH.paths.fm(u));
+      if (gfm && gfm.ids) {
+        this._setMeta({ fm: gfm });
+        return gfm;
+      }
+    }
     return { v: 1, t: 0, ids: {} };
   },
   _saveFM(fm) { this._setMeta({ fm }); },
@@ -215,7 +326,9 @@ const Backup = {
     const myFM = await this._loadFM();          /* lo que YO puse en la nube */
     const myIds = myFM.ids || {};
     const brokerFM = (await Mqtt.fetchRetained(T.bkfm(u), 2600)) || { v: 1, t: 0, ids: {} };
-    const brokerIds = brokerFM.ids || {};
+    /* v11: remoto = broker + espejo duradero (el broker manda por clave) */
+    const ghFM = (typeof GH !== 'undefined') ? await GH.rawJSON(GH.paths.fm(u)) : null;
+    const brokerIds = Object.assign({}, (ghFM && ghFM.ids) || {}, brokerFM.ids || {});
 
     const wanted = await this._mediaWanted();
     const wantMap = new Map(wanted.map((w) => [w.k, w]));
@@ -232,8 +345,17 @@ const Backup = {
         const { iv, ct } = await aesEncryptBytes(this._key, new Uint8Array(await blob.arrayBuffer()));
         const ctB64 = bytesToB64(ct);
         const n = Math.ceil(ctB64.length / this.CHUNK);
+        const parts = [];
         for (let i = 0; i < n; i++) {
-          await Mqtt.publishQ(T.bkf(u, w.k, i), { i, d: ctB64.substr(i * this.CHUNK, this.CHUNK) }, { retain: true });
+          const p = { i, d: ctB64.substr(i * this.CHUNK, this.CHUNK) };
+          parts.push(p);
+          await Mqtt.publishQ(T.bkf(u, w.k, i), p, { retain: true });
+        }
+        /* v11: espejo duradero del blob (mismos chunks cifrados) */
+        if (typeof GH !== 'undefined' && GH.configured()) {
+          try {
+            for (const p of parts) await GH.run(() => GH.putFile(GH.paths.f(u, w.k, p.i), p));
+          } catch (e2) { console.warn('gh media put', w.k, e2); this._ghErr = (e2 && e2.message) || ''; }
         }
         ids[w.k] = { n, iv: bytesToB64(iv), mt: blob.type || '', s: blob.size };
         outBytes += blob.size;
@@ -246,6 +368,12 @@ const Backup = {
     for (const k of Object.keys(myIds)) {
       if (wantMap.has(k)) continue;
       for (let i = 0; i < (myIds[k].n || 1); i++) await Mqtt.publishQ(T.bkf(u, k, i), '', { retain: true }, 2500);
+      /* v11: retirarlo también del espejo duradero */
+      if (typeof GH !== 'undefined' && GH.configured()) {
+        for (let i = 0; i < (myIds[k].n || 1); i++) {
+          try { await GH.run(() => GH.delFile(GH.paths.f(u, k, i))); } catch (e) {}
+        }
+      }
       removed++;
     }
     /* conservar lo que subieron otros dispositivos */
@@ -255,6 +383,13 @@ const Backup = {
 
     const fm = { v: 1, t: Date.now(), ids };
     await Mqtt.publishQ(T.bkfm(u), fm, { retain: true });
+    /* v11: manifiesto de multimedia también en el espejo duradero */
+    if (typeof GH !== 'undefined' && GH.configured()) {
+      try {
+        await GH.run(() => GH.putFile(GH.paths.fm(u), fm));
+        this._setMeta({ ghMedia: Object.keys(ids).length });
+      } catch (e) { console.warn('gh fm put', e); this._ghErr = (e && e.message) || ''; }
+    }
     this._saveFM(fm);
     this._setMeta({ media: Object.keys(ids).length, mediaBytes: outBytes });
     return { published, removed, count: Object.keys(ids).length, bytes: outBytes };
@@ -378,7 +513,13 @@ const Backup = {
     if (!Auth.me || !pwd) return null;
     const u = Auth.me.uid;
     onPhase && onPhase('copia');
-    const dm = await Mqtt.fetchRetained(T.bkdm(u), 2800);
+    let dm = await Mqtt.fetchRetained(T.bkdm(u), 2800);
+    let viaGH = false;
+    if (!dm || !dm.salt) {
+      /* v11: el broker pudo purgar la copia retenida → espejo duradero */
+      const gdm = (typeof GH !== 'undefined') ? await GH.rawJSON(GH.paths.dm(u)) : null;
+      if (gdm && gdm.salt) { dm = gdm; viaGH = true; }
+    }
     if (!dm || !dm.salt) {
       /* cuenta sin copia (nueva, o creada antes de v10): crearla en cuanto
          la conexión con identidad esté viva (initIfNeeded tras conectar) */
@@ -399,12 +540,44 @@ const Backup = {
     onPhase && onPhase('restaurar');
     let restored = null;
     try {
-      const map = await Mqtt.collectRetained(`${NS}/bk/${u}/d/#`, 8000, 700);
-      const ctB64 = this._assembleData(map, dm);
-      if (ctB64) {
-        const data = await this._decryptJSON(this._key, dm.iv, ctB64);
-        restored = this.mergeData(data);
-        restored.cloudT = dm.t || 0;
+      /* manifiesto del espejo duradero (SIEMPRE con sus PROPIOS chunks:
+         nunca se mezcla el iv de un manifiesto con chunks de otro) */
+      let ghData = null;
+      const gdm = (typeof GH !== 'undefined') ? await GH.rawJSON(GH.paths.dm(u)) : null;
+      if (gdm && gdm.salt && gdm.n) {
+        const ghB64 = await this._ghDataB64(u, gdm);
+        if (ghB64) {
+          try {
+            /* la sal del espejo puede diferir si la copia se recreó de cero */
+            const gkey = (gdm.salt === dm.salt) ? this._key : await deriveBackupKey(pwd, gdm.salt, gdm.iters || PBKDF2_ITERS);
+            ghData = await this._decryptJSON(gkey, gdm.iv, ghB64);
+          } catch (e) { ghData = null; }
+        }
+      }
+
+      let primary = null;
+      if (viaGH) {
+        primary = ghData;
+      } else {
+        const map = await Mqtt.collectRetained(`${NS}/bk/${u}/d/#`, 8000, 700);
+        const ctB64 = this._assembleData(map, dm);
+        /* v11: verificar el checksum (chunks de una copia anterior mezclados
+           con un manifiesto nuevo → descifrado imposible) */
+        if (ctB64 && (await this._sumOK(ctB64, dm))) {
+          try { primary = await this._decryptJSON(this._key, dm.iv, ctB64); }
+          catch (e) { primary = null; }
+        }
+      }
+
+      if (primary) {
+        restored = this.mergeData(primary);
+        restored.cloudT = (viaGH ? (gdm && gdm.t) : dm.t) || 0;
+      }
+      /* fusión aditiva con el espejo duradero (unión: nada se pierde) */
+      if (ghData && ghData !== primary) this.mergeData(ghData);
+      if (!restored && ghData) {
+        restored = this.mergeData(ghData);
+        restored.cloudT = (gdm && gdm.t) || 0;
       }
     } catch (e) { console.warn('bk restore', e); restored = null; }
     return { created: false, restored };
@@ -430,8 +603,9 @@ const Backup = {
     if (!this._needsInit || !Auth.me) return false;
     this._needsInit = false;
     if (!this.enabled()) return false;
+    const ghReady = (typeof GH !== 'undefined' && GH.configured());
     await Mqtt.waitConnected(10000);
-    if (!Mqtt.connected) { this._needsInit = true; return false; }
+    if (!Mqtt.connected && !ghReady) { this._needsInit = true; return false; }
     try {
       await this._ensureKey();
       const bytes = await this.publishData();
@@ -464,8 +638,12 @@ const Backup = {
     /* la restauración de multimedia ocurre tras startAppConnection:
        esperar a que la conexión con identidad esté viva */
     if (typeof Mqtt.waitConnected === 'function') await Mqtt.waitConnected(8000);
-    if (!Mqtt.connected) return 0;
-    const fm = await Mqtt.fetchRetained(T.bkfm(u), 2800);
+    let fm = await Mqtt.fetchRetained(T.bkfm(u), 2800);
+    /* v11: si el broker no tiene manifiesto (o lo purgó) → espejo duradero */
+    if (!fm || !fm.ids || !Object.keys(fm.ids).length) {
+      const gfm = (typeof GH !== 'undefined') ? await GH.rawJSON(GH.paths.fm(u)) : null;
+      if (gfm && gfm.ids && Object.keys(gfm.ids).length) fm = gfm;
+    }
     if (!fm || !fm.ids || !Object.keys(fm.ids).length) return 0;
     this._saveFM(fm);
     const entries = Object.entries(fm.ids);
@@ -475,20 +653,28 @@ const Backup = {
       if (!has) missing.push(k);
     }
     if (!missing.length) return 0;
-    const map = await Mqtt.collectRetained(`${NS}/bk/${u}/f/#`, 12000, 900);
-    if (!map || !map.size) return 0;
+    const map = (await Mqtt.collectRetained(`${NS}/bk/${u}/f/#`, 12000, 900)) || new Map();
     let done = 0;
     for (const k of missing) {
       const meta = fm.ids[k];
       if (!meta || !meta.n || !meta.iv) continue;
-      let ctB64 = '';
+      /* v11: cada chunk se busca en el broker y, si falta, en el espejo
+         duradero de GitHub (fusión por chunk: el broker manda) */
+      const parts = [];
       let bad = false;
       for (let i = 0; i < meta.n; i++) {
+        let d = '';
         const raw = map.get(T.bkf(u, k, i));
-        if (!raw) { bad = true; break; }
-        try { ctB64 += JSON.parse(raw).d || ''; } catch (e) { bad = true; break; }
+        if (raw) { try { d = JSON.parse(raw).d || ''; } catch (e) {} }
+        if (!d && typeof GH !== 'undefined') {
+          const ch = await GH.rawJSON(GH.paths.f(u, k, i));
+          if (ch && ch.d) d = ch.d;
+        }
+        if (!d) { bad = true; break; }
+        parts.push(d);
       }
-      if (bad || !ctB64) continue;
+      const ctB64 = bad ? '' : parts.join('');
+      if (!ctB64) continue;
       try {
         const bytes = await aesDecryptBytes(this._key, meta.iv, b64ToBytes(ctB64));
         await IDB.put(k, new Blob([bytes], { type: meta.mt || 'application/octet-stream' }));
@@ -503,15 +689,40 @@ const Backup = {
   async restoreNow(pwd) {
     if (!Auth.me || !pwd) throw new Error('No hay sesión activa.');
     const u = Auth.me.uid;
-    const dm = await Mqtt.fetchRetained(T.bkdm(u), 2800);
-    if (!dm || !dm.salt) throw new Error('No hay copia de seguridad en la nube para esta cuenta.');
-    const key = await deriveBackupKey(pwd, dm.salt, dm.iters || PBKDF2_ITERS);
-    const map = await Mqtt.collectRetained(`${NS}/bk/${u}/d/#`, 8000, 700);
-    const ctB64 = this._assembleData(map, dm);
-    if (!ctB64) throw new Error('La copia de la nube está incompleta (¿conexión?). Inténtalo de nuevo.');
+    let dm = await Mqtt.fetchRetained(T.bkdm(u), 2800);
+    let key = null;
+    let ctB64 = null;
+    if (dm && dm.salt) {
+      key = await deriveBackupKey(pwd, dm.salt, dm.iters || PBKDF2_ITERS);
+      const map = await Mqtt.collectRetained(`${NS}/bk/${u}/d/#`, 8000, 700);
+      ctB64 = this._assembleData(map, dm);
+      /* v11: chunks mezclados/corruptos → no descifra: ir al espejo duradero */
+      if (ctB64 && !(await this._sumOK(ctB64, dm))) ctB64 = null;
+    }
+    if (!ctB64) {
+      /* v11: restaurar desde el espejo duradero de GitHub */
+      const gdm = (typeof GH !== 'undefined') ? await GH.rawJSON(GH.paths.dm(u)) : null;
+      if (!gdm || !gdm.salt) throw new Error('No hay copia de seguridad en la nube para esta cuenta.');
+      key = await deriveBackupKey(pwd, gdm.salt, gdm.iters || PBKDF2_ITERS);
+      const ghB64 = await this._ghDataB64(u, gdm);
+      if (!ghB64) throw new Error('La copia de la nube está incompleta (¿conexión?). Inténtalo de nuevo.');
+      ctB64 = ghB64;
+      dm = gdm;
+    }
     let data;
     try { data = await this._decryptJSON(key, dm.iv, ctB64); }
-    catch (e) { throw new Error('No se pudo descifrar la copia con esa contraseña.'); }
+    catch (e) {
+      /* v11: si la copia del broker no descifra (chunks mezclados entre
+         brokers o corrupción), probar el espejo duradero COMPLETO */
+      const gdm = (typeof GH !== 'undefined') ? await GH.rawJSON(GH.paths.dm(u)) : null;
+      const ghB64 = gdm ? await this._ghDataB64(u, gdm) : null;
+      if (!gdm || !ghB64) throw new Error('No se pudo descifrar la copia con esa contraseña.');
+      try {
+        key = await deriveBackupKey(pwd, gdm.salt, gdm.iters || PBKDF2_ITERS);
+        data = await this._decryptJSON(key, gdm.iv, ghB64);
+        dm = gdm;
+      } catch (e2) { throw new Error('No se pudo descifrar la copia con esa contraseña.'); }
+    }
     const restored = this.mergeData(data);
     this._key = key;
     this._salt = dm.salt;
@@ -525,13 +736,15 @@ const Backup = {
   /* ================== respaldo completo ================== */
 
   async flush(opts = {}) {
-    if (!Auth.me || !Mqtt.connected) return null;
+    /* v11: basta MQTT O el espejo duradero de GitHub para respaldar */
+    const ghReady = (typeof GH !== 'undefined' && GH.configured());
+    if (!Auth.me || (!Mqtt.connected && !ghReady)) return null;
     await this._ensureKey();
     const si = await this._saltInfo();
     if (!this._key || !si) return null;
     this._busy = true;
     try {
-      const bytes = await this.publishData();
+      const bytes = await this.publishData({ ghForce: opts.ghForce !== false });
       let media = null;
       if (opts.media && (typeof Settings === 'undefined' || Settings.bkMedia !== false)) {
         media = await this.publishMedia(opts.onProgress);
@@ -566,12 +779,13 @@ const Backup = {
   },
 
   async _runAuto() {
-    if (this._busy || !Mqtt.connected || !this.enabled()) return;
+    const ghReady = (typeof GH !== 'undefined' && GH.configured());
+    if (this._busy || (!Mqtt.connected && !ghReady) || !this.enabled()) return;
     if (!(await this._ensureKey())) return;
     const now = Date.now();
     if (now - this._lastAuto < this.AUTO_MIN_GAP) { this.schedule(); return; }
     this._lastAuto = now;
-    try { await this.flush({ media: false }); }
+    try { await this.flush({ media: false, ghForce: false }); }
     catch (e) { console.warn('bk auto', e); }
   },
 
@@ -583,6 +797,10 @@ const Backup = {
     const oldPrefix = `${NS}/bk/${old}/`;
     const map = await Mqtt.collectRetained(`${oldPrefix}#`, 9000, 800);
     this._renameLocalKeys(old, nu);
+    /* v11: migrar también el espejo duradero (chunks tal cual, cifrados) */
+    if (typeof GH !== 'undefined' && GH.configured()) {
+      try { await GH.moveUser(old, nu); } catch (e) { console.warn('gh migrate', e); }
+    }
     if (!map || !map.size) return false;
     const newPrefix = `${NS}/bk/${nu}/`;
     let count = 0;
@@ -613,26 +831,70 @@ const Backup = {
     const map = await Mqtt.collectRetained(`${NS}/bk/${u}/#`, 9000, 800);
     const list = map ? [...map.keys()] : [];
     for (const t of list) await Mqtt.publishQ(t, '', { retain: true }, 2500);
+    /* v11: borrar también el espejo duradero de GitHub */
+    let ghFiles = 0;
+    if (typeof GH !== 'undefined' && GH.configured()) {
+      try {
+        const files = await GH.list(`bk/${u}/`);
+        for (const f of files) {
+          try { await GH.run(() => GH.delFile(f.path, f.sha)); ghFiles++; } catch (e) {}
+        }
+      } catch (e) { console.warn('gh wipe', e); }
+    }
     this.wipeKey();
     try { localStorage.removeItem(this.metaLS(u)); } catch (e) {}
     this._salt = null;
     this._saveFMDone();
-    return list.length;
+    return list.length + ghFiles;
   },
-  _saveFMDone() { this._setMeta({ fm: { v: 1, t: 0, ids: {} }, t: 0, bytes: 0, chunks: 0, media: 0 }); },
+  _saveFMDone() { this._setMeta({ fm: { v: 1, t: 0, ids: {} }, t: 0, bytes: 0, chunks: 0, media: 0, ghT: 0, ghChunks: 0, ghBytes: 0, ghMedia: 0 }); },
 
   /* ================== estado para Ajustes ================== */
 
   status() {
-    const st = { on: this.enabled(), hasKey: false, t: 0, bytes: 0, chunks: 0, media: 0 };
-    if (!Auth.me) return st;
+    const st = { on: this.enabled(), hasKey: false, t: 0, bytes: 0, chunks: 0, media: 0,
+                 gh: { pat: false, t: 0, bytes: 0, media: 0, err: '' } };
+    if (!Auth.me) {
+      if (typeof GH !== 'undefined') st.gh.pat = GH.configured();
+      return st;
+    }
     st.hasKey = !!localStorage.getItem(this.keyLS(Auth.me.uid));
     const m = this._getMeta() || {};
     st.t = m.t || 0;
     st.bytes = m.bytes || 0;
     st.chunks = m.chunks || 0;
     st.media = m.media || 0;
+    if (typeof GH !== 'undefined') {
+      st.gh.pat = GH.configured();
+      st.gh.t = m.ghT || 0;
+      st.gh.bytes = m.ghBytes || 0;
+      st.gh.media = m.ghMedia || 0;
+      st.gh.err = this._ghErr || '';
+    }
     return st;
+  },
+
+  /* ================== v11: recuperación de la CUENTA desde GitHub ==================
+     Si el broker perdió el registro de autenticación (directorio retenido
+     purgado), la cuenta entera se recupera del espejo duradero: se
+     descifra la copia con la contraseña y dentro va el registro (sal +
+     hash). Lo usa Auth.login como respaldo cuando el broker no conoce
+     al usuario — así un reinicio de fábrica total no borra la cuenta. */
+  async recoverAccount(u, pwd) {
+    if (typeof GH === 'undefined') return null;
+    const dm = await GH.rawJSON(GH.paths.dm(u));
+    if (!dm || !dm.salt || !dm.n) return null;
+    const key = await deriveBackupKey(pwd, dm.salt, dm.iters || PBKDF2_ITERS);
+    const ctB64 = await this._ghDataB64(u, dm);
+    if (!ctB64) return null;
+    let data;
+    try { data = await this._decryptJSON(key, dm.iv, ctB64); }
+    catch (e) { throw new Error('Contraseña incorrecta.'); }
+    const acct = data && data.acct;
+    if (!acct || acct.uid !== u) throw new Error('La copia de la nube no coincide con este usuario.');
+    const hash = await deriveKey(pwd, acct.salt, acct.iters || PBKDF2_ITERS);
+    if (hash !== acct.hash) throw new Error('Contraseña incorrecta.');
+    return { acct, dm };
   }
 };
 
@@ -648,7 +910,8 @@ const Backup = {
 
 /* ---- al pasar la app a segundo plano: respaldo best-effort de datos ---- */
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && Auth.me && !Backup._busy && Backup.enabled() && Backup.hasKey() && Mqtt.connected) {
-    Backup.flush({ media: false }).catch(() => {});
+  const ghReady = (typeof GH !== 'undefined' && GH.configured());
+  if (document.hidden && Auth.me && !Backup._busy && Backup.enabled() && Backup.hasKey() && (Mqtt.connected || ghReady)) {
+    Backup.flush({ media: false, ghForce: false }).catch(() => {});
   }
 });

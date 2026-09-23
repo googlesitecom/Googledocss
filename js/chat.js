@@ -1089,7 +1089,11 @@ function bubbleHTML(m, prev, chatKey) {
   /* mensaje de sistema del grupo: píldora centrada estilo WhatsApp
      (quién fue añadido, renombrados, expulsados…) */
   if (m.t === 'sys') {
-    const ico = m.k === 'renamed' ? 'i-edit' : m.k === 'removed' ? 'i-user-minus' : 'i-user-plus';
+    const ico = m.k === 'renamed' ? 'i-edit'
+      : m.k === 'removed' ? 'i-user-minus'
+      : m.k === 'admin' ? 'i-shield'
+      : m.k === 'deadmin' ? 'i-user-x'
+      : 'i-user-plus';
     return `<div class="sys-msg" data-mid="${esc(m.id)}"><svg class="icon"><use href="#${ico}"/></svg><span>${esc(m.text)}</span><time>${time}</time></div>`;
   }
 

@@ -183,9 +183,11 @@ const Mqtt = {
   /* Publicación FIABLE (QoS 1) para la copia de seguridad: resuelve true
      cuando el broker acusa recibo (PUBACK). Así ningún chunk se pierde
      aunque el socket se cierre justo después (p. ej. al sustituir la
-     conexión anónima por la de la app, o al recargar tras cerrar sesión). */
+     conexión anónima por la de la app, o al recargar tras cerrar sesión).
+     v11: si el primer intento falla o caduca, se reintenta UNA vez 400 ms
+     después (los brokers públicos a veces pierden el PUBACK). */
   publishQ(topic, obj, opts = {}, timeoutMs = 5000) {
-    return new Promise((resolve) => {
+    const attempt = () => new Promise((resolve) => {
       if (!this.client || !this.connected) return resolve(false);
       try {
         const payload = obj === '' ? '' : (typeof obj === 'string' ? obj : JSON.stringify(obj));
@@ -204,6 +206,7 @@ const Mqtt = {
         resolve(false);
       }
     });
+    return attempt().then((ok) => (ok ? true : sleep(400).then(attempt)));
   },
 
   sub(topics) {

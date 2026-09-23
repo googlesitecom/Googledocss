@@ -41,6 +41,7 @@ const Groups = {
       name,
       creator: Auth.me.uid,
       members: [Auth.me.uid, ...memberUids],
+      admins: [],              /* v11: solo el creador nombra administradores */
       created: Date.now()
     };
     this.save([...this.all(), g]);
@@ -68,6 +69,7 @@ const Groups = {
   publishDescriptor(g) {
     Mqtt.publish(T.group(g.id), {
       id: g.id, name: g.name, creator: g.creator, members: g.members,
+      admins: g.admins || [],
       av: GroupAvatars.get(g.id) || undefined,
       updated: Date.now()
     }, { retain: true, expiry: 15552000 }); /* 180 días */
@@ -107,6 +109,13 @@ const Groups = {
       else if (!m.av && cur) { GroupAvatars.remove(gid); changed = true; }
     }
     if (m.creator) mine.creator = m.creator;
+    /* v11: administradores nombrados por el creador (descriptor nuevo) */
+    if (Array.isArray(m.admins)) {
+      const clean = m.admins.filter((x) => Array.isArray(m.members || mine.members) && (m.members || mine.members).includes(x));
+      const a = [...clean].sort().join(',');
+      const b = [...(mine.admins || [])].sort().join(',');
+      if (a !== b) { mine.admins = clean; changed = true; }
+    }
     if (changed) {
       this.save(list);
       /* vigilar presencia/perfil de los miembros nuevos (p. ej. añadidos
@@ -114,18 +123,33 @@ const Groups = {
       (mine.members || []).forEach((u) => Presence.watch(u));
       App.renderConvoList();
       if (Chat.active === 'g:' + gid) Chat.renderHeaderInfo('g:' + gid);
+      /* v11: si el panel de miembros está abierto, refrescarlo en vivo
+         (cambios de rol vistos al instante, estilo WhatsApp) */
+      if (this._modalGid === gid && !$('#modalRoot').hidden) this.openMembersModal(gid);
     }
   },
 
-  /* ================== ADMINISTRACIÓN POR EL CREADOR ==================
-     El creador puede añadir miembros en cualquier momento (incluso mucho
-     después de crear el grupo), cambiar el nombre y expulsar miembros.
+  /* ================== ADMINISTRACIÓN: CREADOR + ADMINISTRADORES (v11) ==================
+     El CREADOR puede: añadir miembros, renombrar, expulsar a cualquiera
+     y NOMBRAR/QUITAR ADMINISTRADORES.
+     Los ADMINISTRADORES pueden: añadir miembros, renombrar, cambiar la
+     foto y expulsar a miembros normales (nunca al creador ni a otros
+     administradores).
      Todo se propaga con el descriptor retenido + un mensaje de sistema
      que queda en el historial de todos (estilo WhatsApp).                   */
 
   isCreator(gid) {
     const g = this.get(gid);
     return !!g && g.creator === Auth.me.uid;
+  },
+  isAdminOf(gid, uid) {
+    const g = this.get(gid);
+    return !!g && (g.admins || []).includes(uid);
+  },
+  /* ¿puedo gestionar este grupo? (creador o administrador) */
+  canManage(gid) {
+    const g = this.get(gid);
+    return !!g && (g.creator === Auth.me.uid || (g.admins || []).includes(Auth.me.uid));
   },
 
   /* ---------- mensaje de sistema del grupo (autor «sys») ----------
@@ -153,7 +177,7 @@ const Groups = {
   addMembers(gid, memberUids) {
     const g = this.get(gid);
     if (!g) throw new Error('Grupo no encontrado.');
-    if (g.creator !== Auth.me.uid) throw new Error('Solo el creador del grupo puede añadir miembros.');
+    if (!this.canManage(gid)) throw new Error('Solo el creador o un administrador pueden añadir miembros.');
     const uniq = [...new Set((memberUids || []))]
       .filter((u) => u && u !== Auth.me.uid && Friends.isFriend(u) && !g.members.includes(u));
     if (!uniq.length) throw new Error('Elige al menos un amigo que aún no esté en el grupo.');
@@ -202,7 +226,7 @@ const Groups = {
     if (newName.length < 2 || newName.length > 40) throw new Error('El nombre del grupo debe tener entre 2 y 40 caracteres.');
     const g = this.get(gid);
     if (!g) throw new Error('Grupo no encontrado.');
-    if (g.creator !== Auth.me.uid) throw new Error('Solo el creador del grupo puede cambiar el nombre.');
+    if (!this.canManage(gid)) throw new Error('Solo el creador o un administrador pueden cambiar el nombre.');
     if (newName === g.name) return false;
     const old = g.name;
     g.name = newName;
@@ -222,16 +246,25 @@ const Groups = {
     return true;
   },
 
-  /* ---------- EXPULSAR a un miembro (solo el creador) ----------
+  /* ---------- EXPULSAR a un miembro (creador o administrador) ----------
      El descriptor actualizado hace que su cliente se salga solo; se retira
-     su invitación retenida para que no reentre al reconectar.             */
+     su invitación retenida para que no reentre al reconectar.
+     Reglas: nadie expulsa al creador; un administrador no puede expulsar
+     a otro administrador (solo el creador puede).                       */
   removeMember(gid, uid) {
     const g = this.get(gid);
     if (!g) return;
-    if (g.creator !== Auth.me.uid) { UI.toast('Solo el creador del grupo puede eliminar miembros.'); return; }
+    const isCreator = g.creator === Auth.me.uid;
+    const iAmAdmin = (g.admins || []).includes(Auth.me.uid);
+    if (!isCreator && !iAmAdmin) { UI.toast('Solo el creador o un administrador puede eliminar miembros.'); return; }
     if (!uid || uid === Auth.me.uid || uid === g.creator || !g.members.includes(uid)) return;
+    if (iAmAdmin && !isCreator && (g.admins || []).includes(uid)) {
+      UI.toast('Un administrador no puede eliminar a otro administrador.');
+      return;
+    }
     const name = Friends.name(uid);
     g.members = g.members.filter((u) => u !== uid);
+    g.admins = (g.admins || []).filter((u) => u !== uid);
     const list = this.all();
     const idx = list.findIndex((x) => x.id === gid);
     if (idx >= 0) list[idx] = g;
@@ -250,10 +283,62 @@ const Groups = {
     UI.toast(`${name} ya no está en el grupo.`);
   },
 
-  /* ---------- FOTO DEL GRUPO ---------- */
+  /* ---------- NOMBRAR ADMINISTRADOR (solo el creador) ---------- */
+  promote(gid, uid) {
+    const g = this.get(gid);
+    if (!g) return;
+    if (g.creator !== Auth.me.uid) { UI.toast('Solo el creador del grupo puede nombrar administradores.'); return; }
+    if (!uid || uid === Auth.me.uid || uid === g.creator || !g.members.includes(uid)) return;
+    if ((g.admins || []).includes(uid)) return;
+    g.admins = [...(g.admins || []), uid];
+    const list = this.all();
+    const idx = list.findIndex((x) => x.id === gid);
+    if (idx >= 0) list[idx] = g;
+    this.save(list);
+    this.publishDescriptor(g);
+    const name = Friends.name(uid);
+    this.sysMsg(gid, {
+      k: 'admin',
+      text: `${Auth.me.name} hizo administrador a ${name}.`,
+      extra: { uid, name }
+    });
+    /* aviso directo al nuevo administrador (en vivo o con push) */
+    Mqtt.publish(T.evt(uid), { t: 'gadmin', gid, gname: g.name, from: Auth.me.uid, fromName: Auth.me.name });
+    if (!Presence.isOnline(uid)) {
+      Push.notify(uid, 'Nuevo administrador', `${Auth.me.name} te hizo administrador del grupo «${g.name}»`, { chat: 'g:' + gid });
+    }
+    App.renderConvoList();
+    UI.toast(`${name} ahora es administrador del grupo.`);
+  },
+
+  /* ---------- QUITAR ADMINISTRADOR (solo el creador) ---------- */
+  demote(gid, uid) {
+    const g = this.get(gid);
+    if (!g) return;
+    if (g.creator !== Auth.me.uid) { UI.toast('Solo el creador del grupo puede quitar administradores.'); return; }
+    if (!uid || !(g.admins || []).includes(uid)) return;
+    g.admins = (g.admins || []).filter((u) => u !== uid);
+    const list = this.all();
+    const idx = list.findIndex((x) => x.id === gid);
+    if (idx >= 0) list[idx] = g;
+    this.save(list);
+    this.publishDescriptor(g);
+    const name = Friends.name(uid);
+    this.sysMsg(gid, {
+      k: 'deadmin',
+      text: `${Auth.me.name} quitó a ${name} como administrador.`,
+      extra: { uid, name }
+    });
+    Mqtt.publish(T.evt(uid), { t: 'gdeadmin', gid, gname: g.name, from: Auth.me.uid, fromName: Auth.me.name });
+    App.renderConvoList();
+    UI.toast(`${name} ya no es administrador del grupo.`);
+  },
+
+  /* ---------- FOTO DEL GRUPO (creador o administrador) ---------- */
   async setPhoto(gid, file) {
     const g = this.get(gid);
     if (!g) throw new Error('Grupo no encontrado.');
+    if (!this.canManage(gid)) throw new Error('Solo el creador o un administrador pueden cambiar la foto.');
     if (!file || !file.type.startsWith('image/')) throw new Error('Elige un archivo de imagen.');
     if (file.size > 12 * 1024 * 1024) throw new Error('La imagen supera 12 MB.');
     let dataURL = null;
@@ -278,6 +363,7 @@ const Groups = {
   async removePhoto(gid) {
     const g = this.get(gid);
     if (!g) return;
+    if (!this.canManage(gid)) { UI.toast('Solo el creador o un administrador pueden quitar la foto.'); return; }
     GroupAvatars.remove(gid);
     const list = this.all();
     const idx = list.findIndex((x) => x.id === gid);
@@ -297,6 +383,7 @@ const Groups = {
       name: m.name || 'Grupo',
       creator: m.from,
       members: [Auth.me.uid, m.from].filter((v, i, a) => a.indexOf(v) === i),
+      admins: [],
       created: m.ts || Date.now(),
       invitedBy: m.from
     };
@@ -426,45 +513,69 @@ const Groups = {
     setTimeout(() => { const i = $('#grpName'); if (i) i.focus(); }, 60);
   },
 
-  /* ---------- modal: miembros del grupo (con FOTO y ADMIN del creador) ---------- */
+  /* ---------- modal: miembros del grupo (roles, badges y ADMIN) ---------- */
   openMembersModal(gid) {
     const g = this.get(gid);
     if (!g) return;
+    this._modalGid = gid;
     const root = $('#modalRoot');
     const isCreator = g.creator === Auth.me.uid;
+    const iAmAdmin = (g.admins || []).includes(Auth.me.uid);
+    const canManage = isCreator || iAmAdmin;
+    const admins = g.admins || [];
     const members = g.members.map((u) => ({
       uid: u,
       name: u === Auth.me.uid ? Auth.me.name : Friends.name(u),
-      me: u === Auth.me.uid
+      me: u === Auth.me.uid,
+      admin: admins.includes(u) && u !== g.creator
     }));
     const hasPhoto = !!GroupAvatars.get(gid);
+    const roleTxt = isCreator
+      ? ' · eres el creador: puedes añadir, renombrar, expulsar y nombrar administradores'
+      : iAmAdmin
+        ? ' · eres administrador: puedes añadir, renombrar y expulsar miembros'
+        : ' · toca uno para ver su perfil';
     root.innerHTML = `
       <div class="modal group-modal">
         <div class="gp-row">
           <div class="avatar" style="--h:${hueOf(g.id)}">${GroupAvatars.html(gid)}</div>
           <div class="gp-acts">
+            ${canManage ? `
             <button id="btnGPhoto" class="f-btn chat"><svg class="icon"><use href="#i-camera"/></svg>Cambiar foto</button>
-            ${hasPhoto ? '<button id="btnGPhotoDel" class="f-btn reject">Quitar foto</button>' : ''}
+            ${hasPhoto ? '<button id="btnGPhotoDel" class="f-btn reject">Quitar foto</button>' : ''}` : ''}
           </div>
         </div>
         <div class="gp-title">
           <h3>${esc(g.name)}</h3>
-          ${isCreator ? `<button id="btnGRename" class="gp-edit" title="Cambiar el nombre del grupo" aria-label="Cambiar el nombre del grupo"><svg class="icon"><use href="#i-edit"/></svg></button>` : ''}
+          ${canManage ? `<button id="btnGRename" class="gp-edit" title="Cambiar el nombre del grupo" aria-label="Cambiar el nombre del grupo"><svg class="icon"><use href="#i-edit"/></svg></button>` : ''}
         </div>
-        <p>${members.length} miembro${members.length !== 1 ? 's' : ''} · creado por @${esc(g.creator)}${isCreator ? ' · eres el creador: puedes añadir, renombrar y expulsar' : ' · toca uno para ver su perfil'}</p>
+        <p>${members.length} miembro${members.length !== 1 ? 's' : ''} · creado por @${esc(g.creator)}${roleTxt}</p>
         <div class="grp-list">
-          ${members.map((m) => `
+          ${members.map((m) => {
+            const badge = m.uid === g.creator
+              ? '<span class="g-badge creator">creador</span>'
+              : (m.admin ? '<span class="g-badge admin">admin</span>' : '');
+            /* expulsar: creador → cualquiera (salvo él); admin → solo miembros normales */
+            const canKick = canManage && !m.me && m.uid !== g.creator && (isCreator || !m.admin);
+            /* escudo (nombrar/quitar administrador): solo el creador */
+            const shield = (isCreator && !m.me && m.uid !== g.creator)
+              ? `<button class="gm-shield ${m.admin ? 'on' : ''}" data-suid="${esc(m.uid)}" data-sadm="${m.admin ? 1 : 0}" title="${m.admin ? 'Quitar como administrador' : 'Hacer administrador'}" aria-label="${m.admin ? 'Quitar a ' + esc(m.name) + ' como administrador' : 'Hacer a ' + esc(m.name) + ' administrador'}"><svg class="icon"><use href="#i-shield"/></svg></button>`
+              : '';
+            const kick = canKick
+              ? `<button class="gm-x" data-xuid="${esc(m.uid)}" title="Eliminar del grupo" aria-label="Eliminar a ${esc(m.name)} del grupo"><svg class="icon"><use href="#i-x"/></svg></button>`
+              : '';
+            return `
             <div class="grp-member">
               <button class="grp-mid" data-muid="${esc(m.uid)}" title="Ver perfil">
                 <span class="avatar">${Avatars.html(m.uid, m.name)}</span>
-                <span class="g-info"><strong>${esc(m.name)}${m.me ? ' (tú)' : ''}${m.uid === g.creator ? '<span class="g-badge">creador</span>' : ''}</strong><span>@${esc(m.uid)}</span></span>
+                <span class="g-info"><strong>${esc(m.name)}${m.me ? ' (tú)' : ''}${badge}</strong><span>@${esc(m.uid)}</span></span>
                 ${m.me ? '' : `<span class="pres-dot ${Presence.isOnline(m.uid) ? 'on' : ''}"></span>`}
               </button>
-              ${isCreator && !m.me && m.uid !== g.creator ? `
-                <button class="gm-x" data-xuid="${esc(m.uid)}" title="Eliminar del grupo" aria-label="Eliminar a ${esc(m.name)} del grupo"><svg class="icon"><use href="#i-x"/></svg></button>` : ''}
-            </div>`).join('')}
+              ${shield}${kick}
+            </div>`;
+          }).join('')}
         </div>
-        ${isCreator ? `<button id="btnGAdd" class="f-btn add gp-add"><svg class="icon"><use href="#i-user-plus"/></svg>Añadir miembros</button>` : ''}
+        ${canManage ? `<button id="btnGAdd" class="f-btn add gp-add"><svg class="icon"><use href="#i-user-plus"/></svg>Añadir miembros</button>` : ''}
         <div class="m-acts">
           <button class="btn-ghost" data-r="0">Cerrar</button>
           <button class="btn-danger" data-r="leave">Salir del grupo</button>
@@ -485,6 +596,18 @@ const Groups = {
       }
       if (e.target.closest('#btnGRename')) { this.openRenameModal(gid); return; }
       if (e.target.closest('#btnGAdd')) { this.openAddModal(gid); return; }
+      const sh = e.target.closest('.gm-shield');
+      if (sh && sh.dataset.suid) {
+        const who = Friends.name(sh.dataset.suid);
+        if (sh.dataset.sadm === '1') {
+          UI.confirm('Quitar administrador', `¿Quitar a ${who} como administrador del grupo «${g.name}»? Seguirá siendo miembro.`, 'Quitar admin', true)
+            .then((ok) => { if (ok) { this.demote(gid, sh.dataset.suid); this.openMembersModal(gid); } });
+        } else {
+          this.promote(gid, sh.dataset.suid);
+          this.openMembersModal(gid);
+        }
+        return;
+      }
       const kick = e.target.closest('.gm-x');
       if (kick && kick.dataset.xuid) {
         const who = Friends.name(kick.dataset.xuid);
@@ -507,10 +630,10 @@ const Groups = {
     };
   },
 
-  /* ---------- modal: AÑADIR MIEMBROS (solo el creador) ---------- */
+  /* ---------- modal: AÑADIR MIEMBROS (creador o administrador) ---------- */
   openAddModal(gid) {
     const g = this.get(gid);
-    if (!g || g.creator !== Auth.me.uid) return;
+    if (!g || !this.canManage(gid)) return;
     const candidates = Friends.all().filter((f) => !g.members.includes(f.uid));
     const root = $('#modalRoot');
     if (!candidates.length) {
@@ -559,15 +682,15 @@ const Groups = {
     };
   },
 
-  /* ---------- modal: CAMBIAR EL NOMBRE (solo el creador) ---------- */
+  /* ---------- modal: CAMBIAR EL NOMBRE (creador o administrador) ---------- */
   openRenameModal(gid) {
     const g = this.get(gid);
-    if (!g || g.creator !== Auth.me.uid) return;
+    if (!g || !this.canManage(gid)) return;
     const root = $('#modalRoot');
     root.innerHTML = `
       <div class="modal group-modal">
         <h3>Cambiar el nombre</h3>
-        <p>Solo el creador puede renombrar el grupo. Todos los miembros verán el cambio al instante y quedará en el historial.</p>
+        <p>El creador y los administradores pueden renombrar el grupo. Todos los miembros verán el cambio al instante y quedará en el historial.</p>
         <input id="grpRename" class="set-input" maxlength="40" value="${esc(g.name)}" spellcheck="false">
         <div class="m-acts">
           <button class="btn-ghost" data-r="0">Cancelar</button>
@@ -597,6 +720,7 @@ const Groups = {
 
   closeModal() {
     const root = $('#modalRoot');
+    this._modalGid = null;
     root.hidden = true;
     root.innerHTML = '';
     root.onclick = null;

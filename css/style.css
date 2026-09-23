@@ -1639,3 +1639,40 @@ mark { background: color-mix(in srgb, var(--amber) 55%, transparent); color: inh
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, #22c55e) 20%, transparent);
 }
 [data-theme="light"] .bk-status { background: rgba(127, 150, 170, .1); }
+
+/* ================== v11: administradores de grupo + respaldo duradero GitHub ================== */
+
+/* chip «creador» (dorado) y chip «admin» (acento) */
+.g-badge.creator {
+  background: rgba(245, 158, 11, .16);
+  color: #f59e0b;
+}
+[data-theme="light"] .g-badge.creator { background: rgba(245, 158, 11, .2); color: #b45309; }
+.g-badge.admin { background: var(--acc-soft); color: var(--acc2); }
+
+/* botón escudo: nombrar / quitar administrador (solo el creador lo ve) */
+.gm-shield {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  background: transparent; border: none; color: var(--muted); cursor: pointer;
+  transition: background .15s, color .15s, transform .15s;
+}
+.gm-shield:hover { background: var(--acc-soft); color: var(--acc2); transform: translateY(-1px); }
+.gm-shield.on { background: var(--acc-soft); color: var(--acc2); }
+.gm-shield .icon { width: 15px; height: 15px; }
+
+/* bloque «Respaldo duradero (GitHub)» dentro de la tarjeta de copia */
+.gh-block {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.gh-block .bk-status { margin-top: 10px; }
+
+/* pasos del modal de conexión con GitHub */
+.gh-steps {
+  margin: 10px 0 0; padding-left: 18px;
+  color: var(--muted); font-size: 12.5px; line-height: 1.65;
+}
+.gh-steps a { color: var(--acc2); }
+.gh-steps li { margin-bottom: 4px; }
+.gh-steps li::marker { color: var(--acc2); font-weight: 700; }

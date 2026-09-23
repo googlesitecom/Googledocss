@@ -51,7 +51,30 @@ const Auth = {
     u = String(u || '').trim().toLowerCase();
     if (!u || !pwd) throw new Error('Completa todos los campos.');
 
-    const rec = await Mqtt.fetchRetained(T.auth(u), 3200);
+    let rec = await Mqtt.fetchRetained(T.auth(u), 3200);
+    if (!rec && typeof Backup !== 'undefined' && Backup.recoverAccount) {
+      /* v11: el broker pudo PURGAR el directorio de cuentas → recuperar la
+         cuenta del espejo duradero de GitHub (copia cifrada con la
+         contraseña; dentro va el registro con sal + hash). Así un reinicio
+         de fábrica total no borra la cuenta, y el registro se re-publica
+         en el broker para auto-reparar el directorio. */
+      try {
+        const r = await Backup.recoverAccount(u, pwd);
+        if (r && r.acct) {
+          rec = {
+            salt: r.acct.salt, hash: r.acct.hash, iters: r.acct.iters,
+            name: r.acct.name || u, created: r.acct.created || Date.now()
+          };
+          Mqtt.publish(T.auth(u), { ...rec }, { retain: true });
+          if (r.acct.av || r.acct.bio) {
+            Mqtt.publish(T.profile(u), { uid: u, name: rec.name, av: r.acct.av || undefined, bio: r.acct.bio || '', updated: Date.now() }, { retain: true });
+          }
+        }
+      } catch (e) {
+        if (String(e.message || '').indexOf('Contraseña') >= 0) throw e;
+        console.warn('gh recover', e);
+      }
+    }
     if (!rec) throw new Error('Cuenta no encontrada. ¿Ya te registraste?');
 
     const hash = await deriveKey(pwd, rec.salt, rec.iters || PBKDF2_ITERS);
@@ -209,12 +232,14 @@ const Auth = {
     Mqtt.publish(T.auth(newU), { salt: s.salt, hash: s.hash, iters: s.iters || PBKDF2_ITERS, name, created, prev: old }, { retain: true });
     Mqtt.publish(T.profile(newU), { uid: newU, name, av: this.me.av || undefined, bio: this.me.bio || '', updated: Date.now() }, { retain: true });
 
-    /* 4) grupos: descriptores retenidos con el nuevo uid (miembro y creador) */
+    /* 4) grupos: descriptores retenidos con el nuevo uid (miembro, creador
+          y administradores) */
     const glist = (typeof Groups !== 'undefined') ? Groups.all() : [];
     glist.forEach((g) => {
       if (Array.isArray(g.members) && g.members.includes(old)) {
         g.members = g.members.map((u) => (u === old ? newU : u));
         if (g.creator === old) g.creator = newU;
+        if (Array.isArray(g.admins)) g.admins = g.admins.map((u) => (u === old ? newU : u));
         Groups.publishDescriptor(g);
       }
     });
@@ -265,8 +290,9 @@ const Auth = {
   _migrateLocal(old, nu) {
     try {
       const from = `nexo_${old}_`, to = `nexo_${nu}_`;
-      /* claves exactas (sin ambigüedad posible) */
-      ['friends', 'pending_out', 'unread', 'notifs', 'spamstats', 'groups_av', 'groups', 'avatars', 'stickers']
+      /* claves exactas (sin ambigüedad posible) — incluye ghpat: el token
+         de GitHub viaja también con el nuevo uid (y dentro de la copia) */
+      ['friends', 'pending_out', 'unread', 'notifs', 'spamstats', 'groups_av', 'groups', 'avatars', 'stickers', 'ghpat', 'bk', 'bkmeta']
         .forEach((sf) => {
           const k = from + sf;
           const v = localStorage.getItem(k);
@@ -403,7 +429,8 @@ const Auth = {
      este dispositivo; solo se retira la clave de cifrado de la sesión. */
   async logout() {
     try {
-      if (typeof Backup !== 'undefined' && Backup.hasKey() && Backup.enabled() && Mqtt.connected) {
+      const ghReady = (typeof GH !== 'undefined' && GH.configured());
+      if (typeof Backup !== 'undefined' && Backup.hasKey() && Backup.enabled() && (Mqtt.connected || ghReady)) {
         await Promise.race([
           Backup.flush({ media: (typeof Settings === 'undefined' || Settings.bkMedia !== false) }),
           sleep(7000)
