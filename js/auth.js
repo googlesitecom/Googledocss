@@ -240,6 +240,13 @@ const Auth = {
     Presence.goOffline();
     this._migrateLocal(old, newU);
 
+    /* 8b) migrar la COPIA DE SEGURIDAD de la nube al nuevo usuario: los
+            chunks cifrados se re-publican tal cual bajo bk/<nuevo>/... y
+            se limpian los antiguos (la clave no cambia: misma contraseña) */
+    if (typeof Backup !== 'undefined' && Backup.migrateUser) {
+      try { await Backup.migrateUser(old, newU); } catch (e) { console.warn('bk migrate', e); }
+    }
+
     /* 9) sesión nueva → la UI recarga y reconecta ya como @nuevo */
     LS.set(K.session, {
       uid: newU, name,
@@ -389,14 +396,30 @@ const Auth = {
     UI.toast('Foto de perfil eliminada.');
   },
 
-  logout() {
+  /* ---- cerrar sesión ----
+     Antes de salir se guarda la COPIA DE SEGURIDAD en la nube (datos +
+     multimedia incremental) para que al entrar en cualquier dispositivo
+     estén todos los chats y ajustes. Los datos locales se CONSERVAN en
+     este dispositivo; solo se retira la clave de cifrado de la sesión. */
+  async logout() {
+    try {
+      if (typeof Backup !== 'undefined' && Backup.hasKey() && Backup.enabled() && Mqtt.connected) {
+        await Promise.race([
+          Backup.flush({ media: (typeof Settings === 'undefined' || Settings.bkMedia !== false) }),
+          sleep(7000)
+        ]);
+      }
+    } catch (e) { console.warn('bk logout', e); }
+    if (typeof Presence !== 'undefined' && Presence.stopTimers) Presence.stopTimers();
     Presence.goOffline();
+    if (typeof Backup !== 'undefined') Backup.wipeKey();
     LS.del(K.session);
     setTimeout(() => location.reload(), 250);
   },
 
   forceLogout(msg) {
     try { Mqtt.end(); } catch (e) {}
+    if (typeof Backup !== 'undefined') Backup.wipeKey();
     LS.del(K.session);
     alert(msg || 'Sesión no válida.');
     location.reload();

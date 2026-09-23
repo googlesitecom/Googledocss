@@ -1616,3 +1616,26 @@ mark { background: color-mix(in srgb, var(--amber) 55%, transparent); color: inh
 .cu-field { margin-top: 12px; }
 .cu-field:first-of-type { margin-top: 14px; }
 #cuErr { margin: 10px 0 0; }
+
+/* ================== v10: copia de seguridad en la nube ================== */
+
+/* línea de estado dentro de la tarjeta de Ajustes */
+.bk-status {
+  display: flex; align-items: flex-start; gap: 9px;
+  margin-top: 12px; padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--bg2, rgba(127, 150, 170, .08));
+  border: 1px solid var(--line);
+  font-size: 12.5px; line-height: 1.45; color: var(--muted);
+}
+.bk-dot {
+  flex: none; width: 9px; height: 9px; margin-top: 4px;
+  border-radius: 50%;
+  background: var(--muted); opacity: .55;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--muted) 18%, transparent);
+}
+.bk-dot.ok {
+  background: var(--green, #22c55e); opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green, #22c55e) 20%, transparent);
+}
+[data-theme="light"] .bk-status { background: rgba(127, 150, 170, .1); }

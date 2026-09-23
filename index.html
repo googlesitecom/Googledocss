@@ -6,9 +6,9 @@
 <meta id="metaTheme" name="theme-color" content="#0a1014">
 <meta name="description" content="Nexo — mensajería, grupos, llamadas, mensajes de voz y notificaciones en tiempo real. 100% serverless, funciona desde GitHub Pages.">
 <title>Nexo · Chat en tiempo real</title>
-<link rel="icon" href="./favicon.svg?v=9" type="image/svg+xml">
-<link rel="manifest" href="./manifest.json?v=9">
-<link rel="apple-touch-icon" href="./icons/icon-180.png?v=9">
+<link rel="icon" href="./favicon.svg?v=10" type="image/svg+xml">
+<link rel="manifest" href="./manifest.json?v=10">
+<link rel="apple-touch-icon" href="./icons/icon-180.png?v=10">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,7 +16,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./css/style.css?v=9">
+<link rel="stylesheet" href="./css/style.css?v=10">
 </head>
 <body>
 <noscript><div class="noscript">Nexo necesita JavaScript para funcionar.</div></noscript>
@@ -34,6 +34,7 @@
   <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
   <symbol id="i-mic-off" viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol>
@@ -390,26 +391,27 @@
     else if (document.getElementById('cdnFail')) document.getElementById('cdnFail').hidden = true;
   })();
 </script>
-<script src="./js/util.js?v=9"></script>
-<script src="./js/storage.js?v=9"></script>
-<script src="./js/crypto.js?v=9"></script>
-<script src="./js/sound.js?v=9"></script>
-<script src="./js/spam.js?v=9"></script>
-<script src="./js/mqtt-service.js?v=9"></script>
-<script src="./js/presence.js?v=9"></script>
-<script src="./js/push.js?v=9"></script>
-<script src="./js/notify.js?v=9"></script>
-<script src="./js/auth.js?v=9"></script>
-<script src="./js/friends.js?v=9"></script>
-<script src="./js/profile.js?v=9"></script>
-<script src="./js/groups.js?v=9"></script>
-<script src="./js/voice.js?v=9"></script>
-<script src="./js/stickers.js?v=9"></script>
-<script src="./js/emoji.js?v=9"></script>
-<script src="./js/games.js?v=9"></script>
-<script src="./js/chat.js?v=9"></script>
-<script src="./js/calls.js?v=9"></script>
-<script src="./js/theme.js?v=9"></script>
-<script src="./js/app.js?v=9"></script>
+<script src="./js/util.js?v=10"></script>
+<script src="./js/storage.js?v=10"></script>
+<script src="./js/crypto.js?v=10"></script>
+<script src="./js/sound.js?v=10"></script>
+<script src="./js/spam.js?v=10"></script>
+<script src="./js/mqtt-service.js?v=10"></script>
+<script src="./js/backup.js?v=10"></script>
+<script src="./js/presence.js?v=10"></script>
+<script src="./js/push.js?v=10"></script>
+<script src="./js/notify.js?v=10"></script>
+<script src="./js/auth.js?v=10"></script>
+<script src="./js/friends.js?v=10"></script>
+<script src="./js/profile.js?v=10"></script>
+<script src="./js/groups.js?v=10"></script>
+<script src="./js/voice.js?v=10"></script>
+<script src="./js/stickers.js?v=10"></script>
+<script src="./js/emoji.js?v=10"></script>
+<script src="./js/games.js?v=10"></script>
+<script src="./js/chat.js?v=10"></script>
+<script src="./js/calls.js?v=10"></script>
+<script src="./js/theme.js?v=10"></script>
+<script src="./js/app.js?v=10"></script>
 </body>
 </html>

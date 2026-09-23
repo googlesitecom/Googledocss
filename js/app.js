@@ -4,10 +4,17 @@
 /* Preferencias globales (persistidas) */
 const Settings = Object.assign(
   { sound: true, browser: true, spam: true, sens: 'medio', theme: null, accentH: null, wp: 'none',
-    volume: 0.8, vibrate: true, muted: {}, pinned: {}, focus: false },
+    volume: 0.8, vibrate: true, muted: {}, pinned: {}, focus: false,
+    /* v10: copia de seguridad en la nube (chats + ajustes entre dispositivos) */
+    bk: true, bkMedia: true },
   LS.get(K.prefs, {})
 );
 function saveSettings() { LS.set(K.prefs, Settings); }
+
+function fmtKB(bytes) {
+  if (!bytes) return '0 KB';
+  return bytes > 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';
+}
 
 const App = {
   view: 'chats',
@@ -233,6 +240,13 @@ const App = {
     const perm = Push.permission();
     const pushOn = Push.isOn();
     const accentH = Settings.accentH != null ? Settings.accentH : Theme.DEFAULT_H;
+    const bk = (typeof Backup !== 'undefined' && Backup.status) ? Backup.status() : { on: true, t: 0, bytes: 0, media: 0 };
+    const bkMediaOn = Settings.bkMedia !== false;
+    const bkStatusText = !bk.on
+      ? 'Copia automática desactivada: usa «Respaldar ahora» cuando quieras.'
+      : bk.t
+        ? `Última copia: ${new Date(bk.t).toLocaleString('es', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${fmtKB(bk.bytes)}${bk.media ? ' · multimedia: ' + bk.media : ''} — se restaura sola al entrar en otro dispositivo.`
+        : 'Sin copia todavía: se creará automáticamente con tu actividad (o pulsa «Respaldar ahora»).' + (!bk.hasKey ? ' Pedirá tu contraseña para cifrarla.' : '');
 
     box.innerHTML = `
       <div class="set-card">
@@ -340,6 +354,26 @@ const App = {
       </div>
 
       <div class="set-card">
+        <h3><svg class="icon"><use href="#i-cloud"/></svg>Copia de seguridad</h3>
+        <p class="desc">Tus chats, grupos, stickers y ajustes se guardan <strong>cifrados con tu contraseña</strong> en la red y se restauran solos al entrar en otro dispositivo. Al cerrar sesión se guarda una copia completa y tus chats se conservan también en este dispositivo.</p>
+        <div class="set-row">
+          <div class="lbl"><strong>Copia automática</strong><span>Respaldar tras cada cambio y al cerrar sesión</span></div>
+          <label class="sw"><input type="checkbox" data-set="bk" ${bk.on ? 'checked' : ''}><i></i></label>
+        </div>
+        <div class="set-row">
+          <div class="lbl"><strong>Incluir fotos y audios</strong><span>Las imágenes, stickers y notas de voz también viajan</span></div>
+          <label class="sw"><input type="checkbox" data-set="bkMedia" ${bkMediaOn ? 'checked' : ''}><i></i></label>
+        </div>
+        <div class="bk-status">
+          <span class="bk-dot ${bk.t ? 'ok' : ''}"></span>
+          <span>${bkStatusText}</span>
+        </div>
+        <button id="btnBkNow" class="f-btn chat" style="width:100%;justify-content:center;margin-top:10px"><svg class="icon"><use href="#i-cloud"/></svg>Respaldar ahora</button>
+        <button id="btnBkRestore" class="f-btn chat" style="width:100%;justify-content:center;margin-top:8px">Restaurar en este dispositivo</button>
+        ${bk.t || bk.media ? '<button id="btnBkWipe" class="f-btn reject" style="width:100%;justify-content:center;margin-top:8px">Borrar copia de la nube</button>' : ''}
+      </div>
+
+      <div class="set-card">
         <h3><svg class="icon"><use href="#i-logout"/></svg>Sesión</h3>
         <p class="desc">Conectado como <strong>${esc(Auth.me.name)}</strong> · @${esc(Auth.me.uid)}</p>
         <button id="btnLogout" class="f-btn reject" style="width:100%;justify-content:center"><svg class="icon"><use href="#i-logout"/></svg>Cerrar sesión</button>
@@ -441,10 +475,49 @@ const App = {
       const btn = $('#loginBtn');
       btn.disabled = true;
       btn.textContent = 'Verificando…';
+      let bkMsg = '';
       try {
-        await Auth.login($('#liUser').value, $('#liPass').value);
+        const pwd = $('#liPass').value;
+        await Auth.login($('#liUser').value, pwd);
+        /* v10: restaurar chats/ajustes de la copia de seguridad de la nube
+           (o crear la copia si la cuenta aún no la tiene) */
+        if (typeof Backup !== 'undefined') {
+          btn.textContent = 'Restaurando tus chats…';
+          try {
+            const r = await Backup.afterLogin(pwd, (ph) => {
+              btn.textContent = ph === 'restaurar' ? 'Restaurando tus chats…' : 'Preparando tu copia de seguridad…';
+            });
+            if (r && r.restored && (r.restored.keys || r.restored.msgs)) {
+              bkMsg = `Restaurados desde la nube: ${r.restored.msgs} mensaje(s) en ${r.restored.keys} chat(s) y ajustes.`;
+              Backup.refreshUI();
+            }
+          } catch (e2) { console.warn('backup login', e2); }
+        }
         Auth.startAppConnection();
         App.showApp();
+        /* copia inicial pendiente (registro o cuenta pre-v10): publicarla
+           ya sobre la conexión con identidad, que no se destruye */
+        if (typeof Backup !== 'undefined' && Backup.initIfNeeded) Backup.initIfNeeded();
+        if (bkMsg) UI.toast(bkMsg, { icon: 'cloud' });
+        /* multimedia en segundo plano (la conexión con identidad ya está viva);
+           con un reintento defensivo por si la primera carrera con la conexión
+           se pierde (colección de retenidos vacía) */
+        if (typeof Backup !== 'undefined') {
+          const mediaArrived = (n) => {
+            if (n > 0) {
+              UI.toast(`Fotos y audios restaurados de la nube (${n}).`, { icon: 'cloud' });
+              if (Chat.active) Chat.renderMessages(Chat.active);
+              App.renderConvoList();
+            }
+            return n;
+          };
+          Backup.restoreMedia().then(mediaArrived).then((n) => {
+            if (!n) setTimeout(() => Backup.restoreMedia().then(mediaArrived).catch(() => {}), 5000);
+          }).catch((e) => {
+            console.warn('bk media login', e);
+            setTimeout(() => Backup.restoreMedia().then(mediaArrived).catch(() => {}), 5000);
+          });
+        }
       } catch (ex) {
         err.textContent = ex.message || 'No se pudo iniciar sesión.';
         err.hidden = false;
@@ -467,8 +540,14 @@ const App = {
       btn.textContent = 'Creando…';
       try {
         await Auth.register($('#riUser').value, $('#riName').value, $('#riPass').value);
+        /* v10: crear la copia de seguridad desde el primer momento */
+        if (typeof Backup !== 'undefined' && Backup.afterRegister) {
+          btn.textContent = 'Preparando tu copia…';
+          try { await Backup.afterRegister($('#riPass').value); } catch (e2) { console.warn('backup register', e2); }
+        }
         Auth.startAppConnection();
         App.showApp();
+        if (typeof Backup !== 'undefined' && Backup.initIfNeeded) Backup.initIfNeeded();
         UI.toast('¡Cuenta creada! Bienvenido a Nexo.');
       } catch (ex) {
         err.textContent = ex.message || 'No se pudo crear la cuenta.';
@@ -867,7 +946,61 @@ const App = {
         Theme.resetAccent();
         App.renderSettings();
       } else if (btn.id === 'btnLogout') {
+        btn.disabled = true;
+        btn.textContent = 'Guardando copia…';
+        /* async: respalda la copia en la nube y luego recarga */
         Auth.logout();
+      } else if (btn.id === 'btnBkNow') {
+        btn.disabled = true;
+        const orig = btn.innerHTML;
+        btn.textContent = 'Respaldando…';
+        try {
+          if (!Backup.hasKey()) {
+            const pwd = await App.askPasswordModal('Respaldar ahora', 'Confirma tu contraseña para cifrar la copia.');
+            if (!pwd) { btn.disabled = false; btn.innerHTML = orig; return; }
+            if (!(await App.verifyPassword(pwd))) { UI.toast('Contraseña incorrecta.'); btn.disabled = false; btn.innerHTML = orig; return; }
+            await Backup.keyFromPassword(pwd);
+          }
+          const r = await Backup.flush({ media: Settings.bkMedia !== false });
+          if (r) UI.toast(`Copia guardada (${fmtKB(r.bytes)}${r.media && r.media.published ? ' · ' + r.media.published + ' elemento(s) nuevo(s)' : ''}).`, { icon: 'cloud' });
+          else UI.toast('No se pudo respaldar ahora mismo (¿sin conexión?).');
+        } catch (ex) {
+          UI.toast(ex.message || 'No se pudo respaldar.');
+        }
+        btn.disabled = false;
+        btn.innerHTML = orig;
+        App.renderSettings();
+      } else if (btn.id === 'btnBkRestore') {
+        const pwd = await App.askPasswordModal('Restaurar en este dispositivo', 'Escribe tu contraseña para descifrar la copia de la nube.');
+        if (!pwd) return;
+        if (!(await App.verifyPassword(pwd))) { UI.toast('Contraseña incorrecta.'); return; }
+        btn.disabled = true;
+        const orig = btn.textContent;
+        btn.textContent = 'Restaurando…';
+        try {
+          const r = await Backup.restoreNow(pwd);
+          Backup.refreshUI();
+          if (Chat.active) Chat.renderMessages(Chat.active);
+          App.renderSettings();
+          UI.toast(`Restaurado: ${r.restored.msgs} mensaje(s) y ${r.restored.keys} elemento(s) de datos${r.media ? ' · multimedia: ' + r.media : ''}.`, { icon: 'cloud' });
+        } catch (ex) {
+          UI.toast(ex.message || 'No se pudo restaurar.');
+        }
+        btn.disabled = false;
+        btn.textContent = orig;
+      } else if (btn.id === 'btnBkWipe') {
+        const ok = await UI.confirm('Borrar la copia de la nube',
+          'Se borrarán de la red todos los chats, ajustes y multimedia respaldados. Esta acción no se puede deshacer.',
+          'Borrar copia', true);
+        if (!ok) return;
+        const pwd = await App.askPasswordModal('Borrar la copia de la nube', 'Confirma tu contraseña.');
+        if (!pwd) return;
+        if (!(await App.verifyPassword(pwd))) { UI.toast('Contraseña incorrecta.'); return; }
+        try {
+          const n = await Backup.wipeCloud();
+          UI.toast(n ? `Copia de la nube borrada (${n} temas).` : 'No había copia que borrar.');
+        } catch (ex) { UI.toast(ex.message || 'No se pudo borrar.'); }
+        App.renderSettings();
       }
     });
     $('#avatarInput').addEventListener('change', async (e) => {
@@ -908,6 +1041,44 @@ const App = {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && Auth.me && Chat.active) Chat.clearUnread(Chat.active);
     });
+  },
+
+  /* ================== modales auxiliares (v10) ==================
+     Contraseña única para operaciones sensibles de la copia de seguridad */
+  askPasswordModal(title, okText = 'Continuar') {
+    return new Promise((resolve) => {
+      const root = $('#modalRoot');
+      if (!root) return resolve(null);
+      root.innerHTML = `
+        <div class="modal group-modal">
+          <h3>${esc(title)}</h3>
+          <label class="bio-field cu-field">Contraseña
+            <input id="apPass" class="set-input" type="password" autocomplete="current-password" placeholder="tu contraseña">
+          </label>
+          <p id="apErr" class="form-err" hidden></p>
+          <div class="m-acts">
+            <button class="btn-ghost" data-r="0">Cancelar</button>
+            <button class="btn-primary" data-r="1">${esc(okText)}</button>
+          </div>
+        </div>`;
+      root.hidden = false;
+      const inp = $('#apPass');
+      const close = (v) => { root.hidden = true; root.innerHTML = ''; root.onclick = null; resolve(v); };
+      root.onclick = (e) => {
+        const b = e.target.closest('[data-r]');
+        if (!b) return;
+        close(b.dataset.r === '1' ? inp.value : null);
+      };
+      inp.onkeydown = (e) => { if (e.key === 'Enter') close(inp.value); };
+      setTimeout(() => inp.focus(), 60);
+    });
+  },
+
+  async verifyPassword(pwd) {
+    const s = Auth.session();
+    if (!s || !pwd) return false;
+    try { return (await deriveKey(pwd, s.salt, s.iters || PBKDF2_ITERS)) === s.hash; }
+    catch (e) { return false; }
   },
 
   /* pulsación larga (táctil) → menú contextual, sin interferir con el scroll */

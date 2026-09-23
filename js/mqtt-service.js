@@ -35,7 +35,17 @@ const T = {
   rx: (to, from, id) => `${NS}/rx/${to}/${from}/${id}`,
   grx: (gid, from, id) => `${NS}/grx/${gid}/${from}/${id}`,
   /* suscripción web push de cada usuario (notificaciones sin abrir la app) */
-  psub: (u) => `${NS}/psub/${u}`
+  psub: (u) => `${NS}/psub/${u}`,
+  /* COPIA DE SEGURIDAD CIFRADA (v10): los chunks se publican retenidos
+     sin expiración → la copia vive en la red y viaja entre dispositivos.
+     - bk/<u>/dm  manifiesto de datos (sal PBKDF2 + iv + nº de chunks)
+     - bk/<u>/d/<i> chunk i del blob cifrado de datos (chats/ajustes)
+     - bk/<u>/fm  manifiesto de multimedia (ids → nº chunks + iv + mime)
+     - bk/<u>/f/<id>/<i> chunk i del blob cifrado de cada foto/audio  */
+  bkdm: (u) => `${NS}/bk/${u}/dm`,
+  bkd: (u, i) => `${NS}/bk/${u}/d/${i}`,
+  bkfm: (u) => `${NS}/bk/${u}/fm`,
+  bkf: (u, id, i) => `${NS}/bk/${u}/f/${id}/${i}`
 };
 
 const Mqtt = {
@@ -141,10 +151,25 @@ const Mqtt = {
 
   _setStatus(s) { if (this._onStatus) this._onStatus(s); },
 
+  /* espera (encuesta ligera) a que la conexión esté viva — p. ej. tras
+     startAppConnection, antes de recolectar retenidos de la copia */
+  waitConnected(maxMs = 8000) {
+    return new Promise((resolve) => {
+      if (this.connected) return resolve(true);
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        if (this.connected) { clearInterval(iv); resolve(true); }
+        else if (Date.now() - t0 > maxMs) { clearInterval(iv); resolve(false); }
+      }, 150);
+    });
+  },
+
   publish(topic, obj, opts = {}) {
     if (!this.client || !this.connected) return false;
     try {
-      const payload = obj === '' ? '' : JSON.stringify(obj);
+      /* obj string = carga útil YA serializada (p. ej. re-publicar chunks
+         de la copia de seguridad al migrar de usuario) */
+      const payload = obj === '' ? '' : (typeof obj === 'string' ? obj : JSON.stringify(obj));
       const o = { qos: 0, retain: !!opts.retain };
       if (opts.expiry) o.properties = { messageExpiryInterval: opts.expiry };
       this.client.publish(topic, payload, o);
@@ -153,6 +178,32 @@ const Mqtt = {
       console.warn('[publish]', e);
       return false;
     }
+  },
+
+  /* Publicación FIABLE (QoS 1) para la copia de seguridad: resuelve true
+     cuando el broker acusa recibo (PUBACK). Así ningún chunk se pierde
+     aunque el socket se cierre justo después (p. ej. al sustituir la
+     conexión anónima por la de la app, o al recargar tras cerrar sesión). */
+  publishQ(topic, obj, opts = {}, timeoutMs = 5000) {
+    return new Promise((resolve) => {
+      if (!this.client || !this.connected) return resolve(false);
+      try {
+        const payload = obj === '' ? '' : (typeof obj === 'string' ? obj : JSON.stringify(obj));
+        const o = { qos: 1, retain: !!opts.retain };
+        if (opts.expiry) o.properties = { messageExpiryInterval: opts.expiry };
+        let done = false;
+        const to = setTimeout(() => { if (!done) { done = true; resolve(false); } }, timeoutMs);
+        this.client.publish(topic, payload, o, (err) => {
+          if (done) return;
+          done = true;
+          clearTimeout(to);
+          resolve(!err);
+        });
+      } catch (e) {
+        console.warn('[publishQ]', e);
+        resolve(false);
+      }
+    });
   },
 
   sub(topics) {
@@ -200,6 +251,39 @@ const Mqtt = {
       this.client.on('message', handler);
       this.sub(topic);
       setTimeout(() => finish(null), timeout);
+    });
+  },
+
+  /* Recoge TODOS los mensajes retenidos de un filtro con comodín
+     (p. ej. nexo/v1/bk/<uid>/d/#). Los retenidos llegan en ráfaga justo
+     tras suscribirse: se espera un periodo de silencio (quietMs) o el
+     máximo (maxMs). Devuelve Map<tema, payload string> (vacíos omitidos).  */
+  collectRetained(filter, maxMs = 8000, quietMs = 700) {
+    return new Promise((resolve) => {
+      if (!this.client || !this.connected) return resolve(null);
+      const base = filter.replace(/\/#[^#]*$/, '');
+      const map = new Map();
+      let done = false;
+      let quietT = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(quietT);
+        if (this.client) { try { this.client.removeListener('message', handler); } catch (e) {} }
+        this.unsub(filter);
+        resolve(map);
+      };
+      const handler = (t, payload) => {
+        if (done || !t.startsWith(base) || !payload || !payload.length) return;
+        map.set(t, payload.toString());
+        if (quietT) clearTimeout(quietT);
+        quietT = setTimeout(finish, quietMs);
+      };
+      this.client.on('message', handler);
+      this.sub(filter);
+      /* si no llega nada, salir pronto; si llega, tras el silencio */
+      quietT = setTimeout(finish, Math.min(quietMs * 3, maxMs));
+      setTimeout(finish, maxMs);
     });
   }
 };
