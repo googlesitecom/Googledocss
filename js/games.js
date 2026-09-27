@@ -2,7 +2,7 @@
    - Tarjetas en el panel lateral con arte propio por juego
    - Escenario en la zona principal: el juego corre DENTRO de Nexo
      (iframe a pantalla casi completa) o se abre en pestaña nueva
-   - Emergency Strike y Apex Kart (webs de googlesitecom)          */
+   - Emergency Strike, Apex Kart y VelocityGP (webs de googlesitecom)  */
 'use strict';
 
 const Games = {
@@ -22,6 +22,14 @@ const Games = {
       desc: 'Pisa el acelerador y derrapa en circuitos a toda velocidad. Corre contra el reloj y baja tu mejor vuelta.',
       url: 'https://googlesitecom.github.io/gmail/',
       cta: 'Poner en marcha'
+    },
+    {
+      id: 'velocity-gp',
+      name: 'VelocityGP',
+      tag: 'Fórmula 1',
+      desc: 'Simulador de Fórmula 1 con parrilla de 20 coches: DRS y ERS, clima, cámara de cabina y multijugador online.',
+      url: 'https://googlesitecom.github.io/googleslides/',
+      cta: 'Salir a pista'
     }
   ],
   current: null,
@@ -79,6 +87,62 @@ const Games = {
           <rect x="8" y="24" width="38" height="5" rx="2.5"/>
           <rect x="160" y="82" width="30" height="5" rx="2.5"/>
           <rect x="168" y="70" width="22" height="5" rx="2.5"/>
+        </g>
+        <path d="M0 96c34-7 62-2 84 4s44 9 116-6v16H0z" fill="#000" opacity=".45"/>
+      </svg>`;
+    if (id === 'velocity-gp') return `
+      <svg viewBox="0 0 200 110" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <defs>
+          <linearGradient id="ga3" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#1c1114"/><stop offset="1" stop-color="#090607"/>
+          </linearGradient>
+          <linearGradient id="ga3r" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#ff5240"/><stop offset="1" stop-color="#e10600"/>
+          </linearGradient>
+        </defs>
+        <rect width="200" height="110" fill="url(#ga3)"/>
+        <ellipse cx="118" cy="36" rx="72" ry="30" fill="#e10600" opacity=".07"/>
+        <g stroke="#e10600" stroke-width="2.5" opacity=".38" stroke-linecap="round">
+          <path d="M8 22h40M16 36h26M8 50h30"/>
+        </g>
+        <path d="M148 12h11l7 21 7-21h11l-15 39h-9z" fill="#e10600" opacity=".18"/>
+        <ellipse cx="102" cy="85" rx="70" ry="4.5" fill="#000" opacity=".5"/>
+        <g>
+          <rect x="34" y="79" width="22" height="3.5" rx="1.5" fill="url(#ga3r)"/>
+          <rect x="34" y="71" width="3.5" height="11" rx="1.5" fill="#ff5240"/>
+          <path d="M56 82 L60 74 L74 70 L84 66 Q92 63 98 64 L102 56 Q106 52 112 54 L118 56 L130 63 L138 70 L148 74 L148 82 Z" fill="url(#ga3r)"/>
+          <path d="M84 66 Q93 48 102 63" fill="none" stroke="#dbe3ea" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="92" cy="58" r="4.5" fill="#eef2f6"/>
+          <path d="M89 57h6" stroke="#e10600" stroke-width="1.5"/>
+          <circle cx="68" cy="74" r="9" fill="#0c0e13" stroke="#6b7684" stroke-width="2.5"/>
+          <circle cx="68" cy="74" r="6" fill="none" stroke="#e10600" stroke-width="1.6" opacity=".75"/>
+          <circle cx="68" cy="74" r="2.6" fill="#9aa5b1"/>
+          <circle cx="142" cy="73.5" r="10.5" fill="#0c0e13" stroke="#6b7684" stroke-width="2.5"/>
+          <circle cx="142" cy="73.5" r="7" fill="none" stroke="#e10600" stroke-width="1.6" opacity=".75"/>
+          <circle cx="142" cy="73.5" r="3" fill="#9aa5b1"/>
+          <path d="M150 74 L155 60 L161 60 L156 74 Z" fill="#8f99a6"/>
+          <rect x="150" y="53" width="24" height="6" rx="2" fill="url(#ga3r)"/>
+          <rect x="168" y="49" width="5" height="18" rx="2" fill="#ff5240"/>
+        </g>
+        <g transform="skewX(-14)">
+          <rect x="30" y="88" width="9" height="22" fill="#e10600"/>
+          <rect x="39" y="88" width="9" height="22" fill="#e7ecf2"/>
+          <rect x="48" y="88" width="9" height="22" fill="#e10600"/>
+          <rect x="57" y="88" width="9" height="22" fill="#e7ecf2"/>
+          <rect x="66" y="88" width="9" height="22" fill="#e10600"/>
+          <rect x="75" y="88" width="9" height="22" fill="#e7ecf2"/>
+          <rect x="84" y="88" width="9" height="22" fill="#e10600"/>
+          <rect x="93" y="88" width="9" height="22" fill="#e7ecf2"/>
+        </g>
+        <g fill="#e6ebf1">
+          <rect x="140" y="92" width="9" height="9"/><rect x="158" y="92" width="9" height="9"/>
+          <rect x="176" y="92" width="9" height="9"/><rect x="149" y="101" width="9" height="9"/>
+          <rect x="167" y="101" width="9" height="9"/><rect x="185" y="101" width="9" height="9"/>
+        </g>
+        <g fill="#10141a">
+          <rect x="149" y="92" width="9" height="9"/><rect x="167" y="92" width="9" height="9"/>
+          <rect x="185" y="92" width="9" height="9"/><rect x="140" y="101" width="9" height="9"/>
+          <rect x="158" y="101" width="9" height="9"/><rect x="176" y="101" width="9" height="9"/>
         </g>
         <path d="M0 96c34-7 62-2 84 4s44 9 116-6v16H0z" fill="#000" opacity=".45"/>
       </svg>`;
